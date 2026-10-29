@@ -12,11 +12,17 @@ html.embedded h1 { font-size:30px; text-transform:lowercase; letter-spacing:0; }
 html.embedded h2 { font-size:20px; text-transform:lowercase; letter-spacing:0; color:#6b6b68; }
 /* navigasi bawaan diganti hamburger di shell; keluar ditangani shell */
 html.embedded #side, html.embedded #bnav, html.embedded [data-out] { display:none !important; }
-html.embedded .main { margin-left:0 !important; padding:0 20px !important; }
-html.embedded .in { max-width:960px; }
-html.embedded .bar { margin:0 -20px !important; padding:12px 20px 10px !important; background:#fbf3fdee; border-bottom:2px solid #111; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+html.embedded .main { margin-left:0 !important; }
+html.embedded .bar { background:#fbf3fdee; border-bottom:2px solid #111; }
+html.embedded .mon { background:#fff; border:2px solid #111; }
+html.embedded .mon button, html.embedded .mon input { border:0 !important; background:transparent !important; box-shadow:none !important; border-radius:12px; }
+html.embedded .mon button:hover { background:#e6b3ef !important; }
 html.embedded .bar .mob { display:flex !important; }
 html.embedded .bar .ball.mob { display:none !important; }
+html.embedded .col, html.embedded .col:hover { border:0 !important; background:transparent !important; box-shadow:none !important; border-radius:10px; }
+html.embedded .col.on span { color:#111; }
+html.embedded .hero-sub { background:#fff; border:2px solid #111; }
+html.embedded .eyebrow { color:#111; }
 html.embedded .fab { right:20px; bottom:20px; box-shadow:0 4px 0 #111; }
 /* kontrol */
 html.embedded button, html.embedded select, html.embedded input { background:#fff; color:#111; border:2px solid #111; border-radius:999px; }
@@ -47,3 +53,22 @@ html.embedded #toast { background:#111; color:#fff; border-radius:999px; }
 html.embedded .lcard { background:#fff; border:2px solid #111; box-shadow:0 5px 0 #111; }
 html.embedded .chart-svg line, html.embedded .donut circle:first-child { stroke:#11111122; }
 html.embedded .chart-svg text { fill:#6b6b68; }
+
+/* ===== Kontras: warna yang dibuat untuk latar gelap (kuning/putih) diganti agar terbaca di latar terang ===== */
+html.embedded .chart-svg stop[stop-color="#ffd34d"] { stop-color:#f26a35; }
+html.embedded .chart-svg path[stroke="#ffd34d"], html.embedded .chart-svg circle[stroke="#ffd34d"], html.embedded .donut circle[stroke="#ffd34d"] { stroke:#f26a35; }
+html.embedded .chart-svg circle[fill="#ffd34d"] { fill:#f26a35; }
+html.embedded .chart-svg circle[fill="#0a1510"] { fill:#fff; }
+html.embedded .donut text[fill="#f1f5ee"] { fill:#111; }
+html.embedded .donut text[fill="#8da296"] { fill:#6b6b68; }
+html.embedded .donut circle[stroke="#6cb2ff"] { stroke:#1d6fa5; }
+html.embedded .donut circle[stroke="#c58bff"] { stroke:#7b3fb0; }
+html.embedded .donut circle[stroke="#ff9f5c"] { stroke:#d9531e; }
+html.embedded [style*="#ffd34d"] { background-color:#f26a35 !important; }
+html.embedded [style*="#6cb2ff"] { background-color:#1d6fa5 !important; }
+html.embedded [style*="#c58bff"] { background-color:#7b3fb0 !important; }
+html.embedded [style*="#ff9f5c"] { background-color:#d9531e !important; }
+html.embedded input::placeholder, html.embedded textarea::placeholder { color:#6b6b68; opacity:1; }
+html.embedded .hero .mut, html.embedded .hero-sub .mut { color:#3b3a37; }
+html.embedded .hero .g { color:#0d5a34; }
+html.embedded .hero .r { color:#a3231e; }
