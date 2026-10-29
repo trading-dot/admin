@@ -1,0 +1,49 @@
+/* Panel Keuangan di dalam shell: isi & fungsi tetap, tampilan disamakan dengan tema web utama. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Gaegu:wght@400;700&display=swap');
+:root {
+  --bg:#fbf3fd; --pan:#ffffff; --pan2:#f6eefa; --line:#d6d6d4; --tx:#111111; --mut:#6b6b68;
+  --green:#17794a; --red:#c4302b; --blue:#1d6fa5; --gold:#8a5a00; --violet:#7b3fb0;
+  --disp:'Gaegu','Patrick Hand','Comic Sans MS',cursive;
+  --nav:0px;
+}
+html.embedded body { background:var(--bg); color:#111; font:15px/1.55 'Inter',system-ui,sans-serif; padding-bottom:110px; }
+html.embedded body:before { background:none; }
+html.embedded h1 { font-size:30px; text-transform:lowercase; letter-spacing:0; }
+html.embedded h2 { font-size:20px; text-transform:lowercase; letter-spacing:0; color:#6b6b68; }
+/* navigasi bawaan diganti hamburger di shell; keluar ditangani shell */
+html.embedded #side, html.embedded #bnav, html.embedded [data-out] { display:none !important; }
+html.embedded .main { margin-left:0 !important; padding:0 20px !important; }
+html.embedded .in { max-width:960px; }
+html.embedded .bar { margin:0 -20px !important; padding:12px 20px 10px !important; background:#fbf3fdee; border-bottom:2px solid #111; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+html.embedded .bar .mob { display:flex !important; }
+html.embedded .bar .ball.mob { display:none !important; }
+html.embedded .fab { right:20px; bottom:20px; box-shadow:0 4px 0 #111; }
+/* kontrol */
+html.embedded button, html.embedded select, html.embedded input { background:#fff; color:#111; border:2px solid #111; border-radius:999px; }
+html.embedded input, html.embedded select { border-radius:14px; }
+html.embedded button:hover { border-color:#111; background:#e6b3ef; }
+html.embedded button.pri { background:#5be39a; color:#111; border:2px solid #111; box-shadow:0 3px 0 #111; }
+html.embedded button.pri:hover { background:#7aeab0; }
+html.embedded button.danger { color:#c4302b; border-color:#c4302b; background:#fff; }
+html.embedded .tabs, html.embedded .seg { background:#fff; border:2px solid #111; }
+html.embedded .tabs .on, html.embedded .seg .on, html.embedded .chips .on { background:#111; color:#fff; border-color:#111; }
+/* kartu & panel */
+html.embedded .hero { background:#5be39a; border:2px solid #111; box-shadow:0 5px 0 #111; }
+html.embedded .hero:before, html.embedded .hero:after { background:transparent; border-color:#11111122; }
+html.embedded .hero-num { text-shadow:none; }
+html.embedded .eye { background:#fff; border-color:#111; }
+html.embedded .use { background:#11111115; }
+html.embedded .laba { background:#c3effd; border-color:#111; }
+html.embedded .item:active { background:#f6eefa; }
+html.embedded .bub.me { background:#5be39a; color:#111; }
+html.embedded .bub.bot { background:#fff; border:2px solid #111; }
+html.embedded .botfab, html.embedded .botav { background:#ffd51e; color:#111; border:2px solid #111; }
+html.embedded #chatPop { background:#fff; border:2px solid #111; box-shadow:0 5px 0 #111; bottom:90px; }
+html.embedded .botfab { bottom:90px; }
+html.embedded #sheet { background:#11111188; }
+html.embedded #sheet form { background:#fff; border-top:2px solid #111; }
+html.embedded .grab { background:#11111133; }
+html.embedded #toast { background:#111; color:#fff; border-radius:999px; }
+html.embedded .lcard { background:#fff; border:2px solid #111; box-shadow:0 5px 0 #111; }
+html.embedded .chart-svg line, html.embedded .donut circle:first-child { stroke:#11111122; }
+html.embedded .chart-svg text { fill:#6b6b68; }

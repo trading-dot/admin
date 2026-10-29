@@ -1,0 +1,2032 @@
+import {
+    adminAuth, loginAdmin, logoutAdmin, getOrders, updateOrderStatus,
+    getProduk, saveProduk, updateProduk, deleteProduk,
+    getGaleri, saveGaleri, deleteGaleri, updateGaleri, uploadGambar,
+    listenBanners, saveBanner, updateBanner, deleteBanner,
+    listenBannerText, saveBannerText,
+    listenVouchers, saveVoucher, deleteVoucher,
+    listenCustomers, deleteCustomer,
+    listenPelunasan, adminSimpanResi, adminKodeLacakAda, adminEditHarga, adminSimpanDP, adminLunaskan, adminSetStatus, buatKodePelunasan, buatOrderNo, bersihkanPrefix,
+    listenPoTrack, adminTutupPo, adminHapusLacak,
+    listenStok, stokId, adminSimpanStok, adminSesuaikanStok,
+    listenTataLetak, saveTataLetak,
+    getAksesoris, saveAksesoris, updateAksesoris, deleteAksesoris, adminSimpanStokAks, stokIdAks,
+    adminBackfillOrder, turunanPO, tsMillis,
+    getPaymentSettings, savePaymentSettings, hitungMinDP,
+    listenPoUpdates, adminTambahUpdatePo, adminHapusUpdatePo, adminBackfillPoUpdates
+} from './web-firebase.js?v=20261045';
+
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
+import { deleteDoc, doc, updateDoc } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+import { adminDb } from "./web-firebase.js?v=20261045";
+
+let allOrders = [];
+let allProduk = [];
+let allAks = [];              // aksesoris (koleksi terpisah dari produk)
+let allGaleri = [];
+let allBanners = [];
+let allVouchers = [];
+let allCustomers = [];
+let allPelunasan = [];
+let allPoTrack = [];
+const pelByOrder = () => Object.fromEntries(allPelunasan.map(p => [p.orderId, p]));
+const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const rp = n => 'Rp' + Number(n || 0).toLocaleString('id-ID');
+
+let ordersReady = false, produkReady = false, ordersError = '';   // dipakai tab Rekap Pesanan & Pengiriman
+let rk = null;                                                       // diisi initRekapKirim() di bagian bawah file
+let currentFilter = 'semua';
+let currentProdukFilter = 'semua';
+let editingProdukId = null;
+let editingAksId = null;
+let editingBannerId = null;
+
+// ===== AUTH =====
+onAuthStateChanged(adminAuth, async (user) => {
+    if (user) {
+        document.getElementById('loginPage').style.display = 'none';
+        document.getElementById('adminPage').style.display = 'block';
+        console.log('Login admin sebagai:', user.email);
+        showToast('LOGIN SEBAGAI: ' + user.email);
+
+        await Promise.all([
+            loadOrders(),
+            loadProduk(),
+            loadAksesoris(),
+            loadGaleri(),
+            loadBanners(),
+            loadVouchers()
+        ]);
+        loadCustomersList();
+        autoSinkron();
+        listenPelunasan(data => { allPelunasan = data; renderOrders(); });
+        listenPoTrack(data => { allPoTrack = data; renderPoAdmin(); });
+        listenTataLetak(d => { tlStored = d || {}; renderTL(); });
+        listenStok(data => { stokDocs = Object.fromEntries(data.map(d => [d.id, d])); renderStok(); renderStokAks(); renderAksesoris(); });
+    } else {
+        document.getElementById('loginPage').style.display = 'flex';
+        document.getElementById('adminPage').style.display = 'none';
+    }
+});
+
+window.doLogin = async () => {
+    const email = document.getElementById('adminEmail').value;
+    const pass = document.getElementById('adminPass').value;
+    const btn = document.getElementById('loginBtn');
+    const err = document.getElementById('loginErr');
+
+    err.style.display = 'none';
+    btn.disabled = true;
+    btn.innerText = 'MASUK...';
+
+    const ok = await loginAdmin(email, pass);
+    if (!ok) {
+        err.style.display = 'block';
+        btn.disabled = false;
+        btn.innerText = 'MASUK';
+    }
+};
+
+window.doLogout = async () => { await logoutAdmin(); };
+
+// ===== TOAST =====
+window.showToast = (msg, isErr = false) => {
+    const t = document.getElementById('toast');
+    t.innerText = msg;
+    t.className = 'toast' + (isErr ? ' err' : '');
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2500);
+};
+
+// ===== TABS =====
+window.switchTab = (tab) => {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.mob-nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+    document.body.dataset.tab = tab;   // warna latar per tab
+    window.scrollTo({ top: 0 });
+    const navEl = document.getElementById('nav-' + tab);
+    const mobEl = document.getElementById('mob-' + tab);
+    if (navEl) navEl.classList.add('active');
+    if (mobEl) mobEl.classList.add('active');
+    if (rk && (tab === 'rekap' || tab === 'kirim')) rk.refresh(true);
+};
+
+// ===== ORDER =====
+async function loadOrders() {
+    allOrders = await getOrders();
+    ordersError = window.__ordersLoadError || '';   // diisi getOrders() bila Firebase gagal membaca
+    ordersReady = true;
+    allOrders.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    isiFilterProduk();
+    renderOrders();
+    renderPoAdmin();
+    // Render ulang tab Member/Pembeli HANYA kalau data customer dari Firebase
+    // sudah pernah berhasil dimuat sebelumnya (bukan array kosong bawaan).
+    // Sebelumnya kondisi ini selalu true, jadi bisa nge-render "Belum ada member"
+    // padahal sebenarnya listenCustomers() belum/gagal mengambil data.
+    if (customersLoaded) renderCustomers();
+}
+
+window.filterOrder = (filter, el) => {
+    currentFilter = filter;
+    document.querySelectorAll('#tab-order .filter-bar .filter-btn').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+    renderOrders();
+};
+
+function isiFilterProduk() {
+    const select = document.getElementById('filterProduk');
+    if (!select) return;
+    const produkUnik = [...new Set(allOrders.flatMap(o => {
+        if (Array.isArray(o.produk)) return o.produk.map(p => p.nama);
+        return [o.produk];
+    }))];
+    select.innerHTML = `<option value="semua">Semua Produk</option>`;
+    produkUnik.forEach(nama => {
+        select.innerHTML += `<option value="${nama}">${nama}</option>`;
+    });
+}
+
+window.filterProdukOrder = (produk) => {
+    currentProdukFilter = produk;
+    renderOrders();
+};
+
+const uiHarga = {};         // orderId -> true: form edit harga terbuka
+const uiDP = {};            // orderId -> true: admin memilih status DP, nominal belum disimpan
+const poUpd = {}, poUpdUnsub = {};    // update per ARTIKEL: produkId -> daftar update
+function ensurePoUpdSubs(pids) {
+    (pids || []).forEach(pid => {
+        if (poUpdUnsub[pid]) return;
+        poUpdUnsub[pid] = listenPoUpdates(pid, list => { poUpd[pid] = list; renderPoUpdBox(pid); });
+    });
+}
+const $ = id => document.getElementById(id);
+const errMsg = e => (e && e.code === 'permission-denied')
+    ? 'DITOLAK FIREBASE — publish firestore.rules terbaru di Firebase Console dulu'
+    : ((e && (e.code || e.message)) || 'error');
+const idOrder = o => o.kodePelunasan || o.orderNo || o.id;
+const artikelOrder = o => namaProdukText(o) || '-';
+const isPoOrder = o => turunanPO(o, allProduk).isPO;
+
+let orderQuery = '';
+window.searchOrder = (q) => { orderQuery = String(q || '').trim().toLowerCase(); renderOrders(true); };
+
+function updateOrderStats() {
+    const cnt = st => allOrders.filter(o => (o.status || 'pending') === st).length;
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    const pending = cnt('pending');
+    set('stTotal', allOrders.length);
+    set('stPending', pending);
+    set('stDp', cnt('dp'));
+    set('stLunas', cnt('lunas'));
+    const b = $('badgePending');
+    if (b) { b.textContent = pending; b.classList.toggle('show', pending > 0); }
+}
+
+window.renderOrders = (force) => {
+    if (rk) rk.refresh();   // tab Rekap/Pengiriman ikut diperbarui bila sedang terbuka
+    updateOrderStats();
+    const list = $('orderList');
+    if (!list) return;
+    const ae = document.activeElement;
+    if (!force && ae && list.contains(ae) && ae.tagName === 'INPUT') return;   // jangan timpa yang sedang diketik
+
+    let filtered = currentFilter === 'semua' ? allOrders : allOrders.filter(o => (o.status || 'pending') === currentFilter);
+    if (currentProdukFilter !== 'semua') {
+        filtered = filtered.filter(o => Array.isArray(o.produk) ? o.produk.some(p => p.nama === currentProdukFilter) : o.produk === currentProdukFilter);
+    }
+    if (orderQuery) {
+        filtered = filtered.filter(o => [o.nama, idOrder(o), o.wa, o.email, namaProdukText(o)]
+            .some(v => String(v || '').toLowerCase().includes(orderQuery)));
+    }
+    if (!filtered.length) {
+        const msg = (orderQuery || currentFilter !== 'semua' || currentProdukFilter !== 'semua') ? 'Tidak ada order yang cocok dengan filter' : 'Belum ada order';
+        list.innerHTML = `<div class="empty"><i class="fas fa-box-open"></i><p>${msg}</p></div>`;
+        return;
+    }
+    const pelMap = pelByOrder();
+    list.innerHTML = filtered.map(o => orderCardHTML(o, pelMap[o.id])).join('');   // terbaru -> terlama
+};
+
+function orderCardHTML(o, pel) {
+    const total = totalOrder(o);
+    const status = o.status || 'pending';
+    const uiStatus = uiDP[o.id] ? 'dp' : status;
+    const dpNom = Number(o.dpNominal || 0);
+    const po = isPoOrder(o);
+    const date = new Date(o.createdAt).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    let sc = 's-pending', st = 'PENDING';
+    if (status === 'lunas') { sc = 's-approved'; st = 'LUNAS'; }
+    if (status === 'dp') { sc = 's-dp'; st = 'DP'; }
+    if (status === 'rejected') { sc = 's-rejected'; st = 'DITOLAK'; }
+
+    const items = Array.isArray(o.produk)
+        ? o.produk.map(p => ({ nama: p.nama, warna: p.warna, size: p.size, tambahan: p.tambahan }))
+        : [{ nama: o.produk, warna: o.warna, size: o.size, tambahan: o.tambahan }];
+    const itemsHTML = items.map(p => `
+        <div class="oc-item"><b>${esc(p.nama)}</b><span>${(p.warna === '-' && p.size === '-') ? 'Aksesoris' : esc(p.warna) + ' / ' + esc(p.size)}</span>${p.tambahan ? `<div class="oc-add">+ ${esc(p.tambahan)}</div>` : ''}</div>`).join('');
+
+    const voucherHTML = o.voucherKode ? `
+        <div class="info-item warn">Voucher <span>${esc(o.voucherKode)}${o.voucherDeskripsi ? ' · ' + esc(o.voucherDeskripsi) : ''}</span></div>` : '';
+
+    const subTotal = (status === 'dp' && dpNom)
+        ? `<div class="sub"><span>DP dibayar <b>${rp(dpNom)}</b></span><span>Sisa <b>${rp(o.sisaBayar)}</b></span></div>` : '';
+
+    const dpBlock = uiStatus === 'dp' ? `
+        <div class="oc-section">
+            <div class="oc-sec-title">Nominal DP</div>
+            <div class="oc-row">
+                <div class="oc-field">
+                    <label for="dpInput-${o.id}">DP yang dibayar (Rp)</label>
+                    <input type="text" class="oc-input" inputmode="numeric" id="dpInput-${o.id}" value="${dpNom ? dpNom.toLocaleString('id-ID') : ''}" placeholder="mis. 70.000" oninput="hitungSisaDP('${o.id}')">
+                </div>
+                <div class="oc-field">
+                    <div class="lbl">Sisa (otomatis)</div>
+                    <div class="oc-calc" id="dpSisa-${o.id}" data-total="${total}">${dpNom ? rp(total - dpNom) : '-'}</div>
+                </div>
+            </div>
+            <button onclick="simpanDP('${o.id}')" class="btn-sm btn-approve btn-block" style="margin-top:12px"><i class="fas fa-save"></i> ${status === 'dp' ? 'Update DP' : 'Simpan DP'}</button>
+            ${status !== 'dp' ? '<div class="oc-hint">Status baru berubah menjadi DP setelah nominal disimpan.</div>' : ''}
+        </div>` : '';
+
+    const verifBlock = (pel && pel.status === 'menunggu_verifikasi' && status === 'dp') ? `
+        <div class="oc-section alert">
+            <div class="oc-sec-title yellow"><i class="fas fa-bell"></i> Bukti pelunasan masuk</div>
+            <div class="oc-note">Cek bukti: nominal harus <b>${rp(o.sisaBayar)}</b>. Setelah diverifikasi, status otomatis DP → LUNAS dan timeline "Pelunasan" terbuat.</div>
+            <button onclick="lunaskanOrder('${o.id}')" class="btn-sm btn-approve btn-block"><i class="fas fa-check"></i> Verifikasi &amp; lunaskan</button>
+        </div>` : '';
+
+    const hargaBlock = uiHarga[o.id] ? `
+        <div class="oc-section">
+            <div class="oc-sec-title">Edit harga order</div>
+            <div class="oc-row">
+                <div class="oc-field"><label>Harga kaos (Rp)</label>
+                    <input type="text" class="oc-input" inputmode="numeric" id="hgKaos-${o.id}" value="${o.hargaKaos ? Number(o.hargaKaos).toLocaleString('id-ID') : ''}" oninput="hitungTotalHarga('${o.id}')"></div>
+                <div class="oc-field"><label>Ongkir (Rp)</label>
+                    <input type="text" class="oc-input" inputmode="numeric" id="hgOngkir-${o.id}" value="${o.ongkir ? Number(o.ongkir).toLocaleString('id-ID') : ''}" oninput="hitungTotalHarga('${o.id}')"></div>
+                <div class="oc-field"><label>Diskon (Rp, opsional)</label>
+                    <input type="text" class="oc-input" inputmode="numeric" id="hgDiskon-${o.id}" value="${o.diskon ? Number(o.diskon).toLocaleString('id-ID') : ''}" oninput="hitungTotalHarga('${o.id}')"></div>
+            </div>
+            <div class="oc-hint" style="font-size:13px">Total (otomatis): <b id="hgTotal-${o.id}" style="color:var(--green);font-size:18px">${total ? rp(total) : '-'}</b>${status === 'dp' ? ` · DP ${rp(dpNom)}` : ''}</div>
+            <div class="oc-row" style="margin-top:12px">
+                <button onclick="simpanHarga('${o.id}')" class="btn-sm btn-approve"><i class="fas fa-save"></i> Simpan harga</button>
+                <button onclick="tutupEditHarga('${o.id}')" class="btn-sm btn-bukti">Batal</button>
+            </div>
+        </div>` : '';
+
+    const resiBlock = (status === 'dp' || status === 'lunas') ? `
+        <div class="oc-section">
+            <div class="oc-sec-title">Nomor resi ${o.resi ? '<span class="ok">· sudah diunggah</span>' : '· belum diunggah'}</div>
+            <div class="oc-row">
+                <input type="text" class="oc-input" style="flex:1;min-width:160px;width:auto" id="resiInput-${o.id}" value="${esc(o.resi || '')}" placeholder="mis. JP1234567890" autocomplete="off" maxlength="60">
+                <button onclick="simpanResi('${o.id}')" class="btn-sm btn-approve" style="flex:none"><i class="fas fa-truck"></i> ${o.resi ? 'Update resi' : 'Simpan resi'}</button>
+                ${o.resi ? `<button onclick="hapusResi('${o.id}')" class="btn-sm btn-reject" style="flex:none" title="Hapus resi"><i class="fas fa-trash"></i></button>` : ''}
+            </div>
+        </div>` : '';
+
+    return `
+    <div class="order-card st-${status}">
+        <div class="oc-head">
+            <div style="min-width:0">
+                <div class="order-name">${esc(o.nama)}</div>
+                <div class="oc-meta">
+                    <span class="chip id" title="ID order">${esc(idOrder(o))}</span>
+                    <span class="chip ${po ? 'po' : 'ready'}">${po ? 'Pre Order' : 'Ready Stock'}</span>
+                    <span class="order-time" style="margin:0">${date}</span>
+                </div>
+            </div>
+            <div class="oc-head-right">
+                <div class="status-badge ${sc}">${st}</div>
+                <button class="icon-del" onclick="hapusOrder('${o.id}')" title="Hapus order"><i class="fas fa-trash"></i></button>
+            </div>
+        </div>
+
+        <div class="oc-body">
+            <div class="oc-items">${itemsHTML}</div>
+            <div class="order-info">
+                <div class="info-item">WhatsApp <span>${esc(o.wa)}</span></div>
+                ${o.email ? `<div class="info-item">Email <span>${esc(o.email)}</span></div>` : ''}
+                <div class="info-item full">Alamat <span>${esc(o.alamat)}</span></div>
+                <div class="info-item">Harga kaos <span>${o.hargaKaos ? rp(o.hargaKaos) : '-'}</span></div>
+                <div class="info-item">Ongkir <span>${o.ongkir ? rp(o.ongkir) : '-'}</span></div>
+                ${payInfoHTML(o)}
+                ${voucherHTML}
+            </div>
+            <div class="oc-total">
+                <div><div class="lbl">TOTAL</div><div class="val">${rp(total)}</div></div>
+                ${subTotal}
+            </div>
+        </div>
+
+        <div class="order-actions">
+            ${o.buktiURL ? `<a href="${esc(o.buktiURL)}" target="_blank" rel="noopener" class="btn-sm btn-bukti"><i class="fas fa-image"></i> Bukti 1</a>` : ''}
+            ${(pel && pel.buktiPelunasanURL) ? `<a href="${esc(pel.buktiPelunasanURL)}" target="_blank" rel="noopener" class="btn-sm btn-bukti"><i class="fas fa-image"></i> Bukti 2</a>` : ''}
+            ${uiHarga[o.id] ? '' : `<button onclick="bukaEditHarga('${o.id}')" class="btn-sm btn-bukti"><i class="fas fa-pen"></i> Edit harga</button>`}
+            <select class="status-select" onchange="gantiStatusOrder('${o.id}', this.value)" aria-label="Ubah status order">
+                <option value="pending" ${uiStatus === 'pending' ? 'selected' : ''}>⏳ Pending</option>
+                <option value="dp" ${uiStatus === 'dp' ? 'selected' : ''}>💳 DP</option>
+                <option value="lunas" ${uiStatus === 'lunas' ? 'selected' : ''}>✅ Lunas</option>
+                <option value="rejected" ${uiStatus === 'rejected' ? 'selected' : ''}>❌ Ditolak</option>
+            </select>
+        </div>
+        ${dpBlock}
+        ${verifBlock}
+        ${hargaBlock}
+        ${resiBlock}
+    </div>`;
+}
+
+window.filterOrder = (filter, el) => {
+    currentFilter = filter;
+    document.querySelectorAll('#tab-order .filter-bar .filter-btn').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+    renderOrders(true);
+};
+
+window.hitungSisaDP = (id) => {
+    const inp = $('dpInput-' + id), out = $('dpSisa-' + id);
+    if (!inp || !out) return;
+    const nom = Number(inp.value.replace(/\D/g, '')) || 0;
+    inp.value = nom ? nom.toLocaleString('id-ID') : '';
+    const total = Number(out.dataset.total) || 0;
+    out.innerText = nom ? rp(total - nom) : '-';
+    out.style.color = (total - nom) < 0 ? 'var(--red)' : 'var(--green)';
+};
+
+// Order yang tadinya DITOLAK lalu dipulihkan jadi DP/LUNAS: stok dipotong lagi (kebalikan dari "kembalikan stok saat ditolak")
+async function stokSetelahPulih(o, statusBaru) {
+    try {
+        const h = await adminSesuaikanStok(o, statusBaru);
+        return h === 'potong' ? { stokDikembalikan: false } : {};
+    } catch (e) { console.error(e); showToast('STATUS OK, TAPI STOK GAGAL DIPOTONG LAGI — CEK TAB STOK', true); return {}; }
+}
+
+window.simpanDP = async (id) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    const nom = Number(($('dpInput-' + id).value || '').replace(/\D/g, '')) || 0;
+    const total = totalOrder(o);
+    if (nom <= 0) return showToast('ISI NOMINAL DP DULU!', true);
+    if (nom >= total) return showToast('DP TIDAK BOLEH >= TOTAL. Kalau sudah full, pilih LUNAS.', true);
+    try {
+        const kode = o.kodePelunasan || buatKodePelunasan(prefixUntukOrder(o));   // order lama tanpa ID: ID dibuat sekali di sini
+        const orderNo = o.orderNo || buatOrderNo(namaProdukText(o));
+        const { sisa } = await adminSimpanDP(o, nom, kode, orderNo);
+        delete uiDP[id];
+        const flagStok = await stokSetelahPulih(o, 'dp');
+        allOrders = allOrders.map(x => x.id === id ? { ...x, status: 'dp', dpNominal: nom, sisaBayar: sisa, kodePelunasan: kode, orderNo, ...flagStok } : x);
+        renderOrders(true);
+        showToast('DP DISIMPAN ✓ SISA ' + rp(sisa));
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL SIMPAN DP: ' + errMsg(e), true);
+    }
+};
+
+const angkaDari = id => Number((($(id) || {}).value || '').replace(/\D/g, '')) || 0;
+window.bukaEditHarga = (id) => { uiHarga[id] = true; renderOrders(true); };
+window.tutupEditHarga = (id) => { delete uiHarga[id]; renderOrders(true); };
+window.hitungTotalHarga = (id) => {
+    ['hgKaos-', 'hgOngkir-', 'hgDiskon-'].forEach(pf => {
+        const el = $(pf + id); if (!el) return;
+        const n = Number(el.value.replace(/\D/g, '')) || 0;
+        el.value = n ? n.toLocaleString('id-ID') : '';
+    });
+    const t = angkaDari('hgKaos-' + id) + angkaDari('hgOngkir-' + id) - angkaDari('hgDiskon-' + id);
+    const out = $('hgTotal-' + id);
+    if (out) { out.innerText = t > 0 ? rp(t) : '-'; out.style.color = t > 0 ? 'var(--green)' : 'var(--red)'; }
+};
+window.simpanHarga = async (id) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    const kaos = angkaDari('hgKaos-' + id), ongkir = angkaDari('hgOngkir-' + id), diskon = angkaDari('hgDiskon-' + id);
+    if (kaos <= 0) return showToast('ISI HARGA KAOS DULU!', true);
+    try {
+        const r = await adminEditHarga(o, kaos, ongkir, diskon);
+        allOrders = allOrders.map(x => x.id === id ? { ...x, hargaKaos: kaos, ongkir, diskon, totalAkhir: r.total, ...(r.sisa != null ? { sisaBayar: r.sisa } : {}) } : x);
+        delete uiHarga[id];
+        showToast('HARGA DISIMPAN ✓ TOTAL ' + rp(r.total));
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL: ' + errMsg(e), true);
+    }
+    renderOrders(true);
+};
+
+window.simpanResi = async (id) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    const val = ($('resiInput-' + id).value || '').trim();
+    if (!val) return showToast('ISI NOMOR RESI DULU!', true);
+    try {
+        const r = await adminSimpanResi(o, val);
+        allOrders = allOrders.map(x => x.id === id ? { ...x, resi: r.resi, resiAt: r.resiAt } : x);
+        showToast('RESI DISIMPAN ✓');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL SIMPAN RESI: ' + errMsg(e), true);
+    }
+    renderOrders(true);
+};
+
+window.hapusResi = async (id) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    if (!confirm(`Hapus resi ${o.resi} dari ${idOrder(o)}?\n\nDi sisi pelanggan kembali tampil "Pesanan anda belum dikirim".`)) return;
+    try {
+        await adminSimpanResi(o, '');
+        allOrders = allOrders.map(x => x.id === id ? { ...x, resi: '', resiAt: null } : x);
+        showToast('RESI DIHAPUS');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL HAPUS RESI: ' + errMsg(e), true);
+    }
+    renderOrders(true);
+};
+
+window.gantiStatusOrder = async (id, statusBaru) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    const lama = o.status || 'pending';
+    if (statusBaru === 'dp') {
+        if (lama === 'dp') { delete uiDP[id]; return renderOrders(true); }
+        uiDP[id] = true;           // tampilkan input nominal DP; status disimpan bersama nominal
+        return renderOrders(true);
+    }
+    delete uiDP[id];
+    if (statusBaru === lama) return renderOrders(true);
+    if (statusBaru === 'lunas') return window.lunaskanOrder(id);
+    try {
+        const r = await adminSetStatus(o, statusBaru);
+        const flag = r && r.stok === 'kembali' ? { stokDikembalikan: true } : r && r.stok === 'potong' ? { stokDikembalikan: false } : {};
+        allOrders = allOrders.map(x => x.id === id ? { ...x, status: statusBaru, ...flag } : x);
+        showToast(r && r.stok === 'kembali' ? 'STATUS DIPERBARUI ✓ · STOK DIKEMBALIKAN' : r && r.stok === 'potong' ? 'STATUS DIPERBARUI ✓ · STOK DIPOTONG LAGI' : 'STATUS DIPERBARUI ✓');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL UPDATE STATUS!', true);
+    }
+    renderOrders(true);
+};
+
+window.lunaskanOrder = async (id) => {
+    const o = allOrders.find(x => x.id === id);
+    if (!o) return;
+    const msg = o.status === 'dp'
+        ? `Verifikasi pelunasan ${idOrder(o)}?\n\nSisa ${rp(o.sisaBayar)} dianggap sudah dibayar. Status jadi LUNAS dan timeline "Pelunasan" dibuat otomatis (sekali saja).`
+        : `Tandai ${idOrder(o)} LUNAS?`;
+    if (!confirm(msg)) { delete uiDP[id]; return renderOrders(true); }
+    try {
+        const r = await adminLunaskan(id);
+        const flagStok = await stokSetelahPulih(o, 'lunas');
+        allOrders = allOrders.map(x => x.id === id ? { ...x, status: 'lunas', sisaBayar: 0, ...flagStok } : x);
+        showToast(r.changed ? 'ORDER LUNAS ✓' : 'ORDER SUDAH LUNAS');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL: ' + errMsg(e), true);
+    }
+    renderOrders(true);
+};
+
+// Sekali per sesi admin: order lama yang belum punya ID / belum dikenali sebagai Pre Order disinkronkan otomatis
+// (aman diulang, tidak membuat order baru, tidak menghapus apa pun).
+let autoSinkronJalan = false;
+async function autoSinkron() {
+    if (autoSinkronJalan) return;
+    autoSinkronJalan = true;
+    let adaLacak = null;
+    try { adaLacak = await adminKodeLacakAda(); } catch (e) { console.error('cek lacak', e); }
+    const perlu = allOrders.filter(o => {
+        const t = turunanPO(o, allProduk);
+        return !o.kodePelunasan || o.isPO !== t.isPO || (o.poIds || []).length !== t.poIds.length
+            || (adaLacak && o.kodePelunasan && !adaLacak.has(o.kodePelunasan));   // order tanpa data pelacakan => belum bisa dicek pelanggan
+    });
+    if (!perlu.length) return;
+    let ok = 0;
+    for (const o of perlu) {
+        try { await adminBackfillOrder(o, syncCtx()); ok++; } catch (e) { console.error('autoSinkron', o.id, e); }
+    }
+    await loadOrders();
+    showToast(`${ok} ORDER LAMA DISINKRONKAN ✓`);
+}
+const syncCtx = () => ({ produkList: allProduk.concat(allAks), poTrackMap: Object.fromEntries(allPoTrack.map(t => [t.id, t])) });
+window.sinkronSemuaOrder = async () => {
+    if (!confirm(`Sinkronkan ${allOrders.length} order?\n\nOrder tanpa ID akan diberi ID; timeline "Pesanan dibuat"/"Pelunasan" dan langkah lama dilengkapi. Tidak membuat order baru, tidak menghapus apa pun, aman diulang.`)) return;
+    let ok = 0, gagal = 0, galatPertama = '';
+    for (const o of allOrders) {
+        try { await adminBackfillOrder(o, syncCtx()); ok++; } catch (e) { console.error(o.id, e); gagal++; if (!galatPertama) galatPertama = errMsg(e); }
+    }
+    try { await adminBackfillPoUpdates(syncCtx().poTrackMap); } catch (e) { console.error(e); }
+    await loadOrders();
+    showToast(`SINKRON SELESAI: ${ok} OK${gagal ? ', ' + gagal + ' GAGAL (' + galatPertama + ')' : ''}`, gagal > 0);
+};
+
+// Hapus sisa order: pelacakan (lacak + timeline) DAN data pelunasan (supaya tidak muncul lagi di halaman Pelunasan)
+const hapusJejakOrder = async (kode) => {
+    if (!kode) return;
+    await adminHapusLacak(kode);
+    try { await deleteDoc(doc(adminDb, "pelunasan", kode)); } catch (e) { console.warn('hapus pelunasan:', e); }
+};
+
+window.hapusOrder = async (id) => {
+    if (!confirm("Hapus order ini beserta timeline-nya? (tidak bisa dibatalkan)")) return;
+    try {
+        const oHapus = allOrders.find(x => x.id === id);
+        await deleteDoc(doc(adminDb, "orders", id));
+        if (oHapus && oHapus.kodePelunasan) await hapusJejakOrder(oHapus.kodePelunasan);
+        allOrders = allOrders.filter(o => o.id !== id);
+        isiFilterProduk();
+        renderOrders(true);
+        renderCustomers();
+        showToast("ORDER DIHAPUS");
+    } catch (err) {
+        console.error(err);
+        alert("Gagal hapus order");
+    }
+};
+
+// Bersihkan data pelunasan "yatim": ordernya sudah dihapus tapi data pelunasannya masih tersisa (muncul di halaman Pelunasan pelanggan)
+window.bersihkanPelunasanYatim = async () => {
+    if (!ordersReady || !allOrders.length) return alert('Data order belum termuat. Coba lagi sebentar.');
+    const idAda = new Set(allOrders.map(o => o.id));
+    const kodeAda = new Set(allOrders.map(o => o.kodePelunasan).filter(Boolean));
+    const yatim = (allPelunasan || []).filter(p => !idAda.has(p.orderId) && !kodeAda.has(p.id));
+    if (!yatim.length) return showToast('TIDAK ADA DATA SISA');
+    if (!confirm(`Ada ${yatim.length} data pelunasan tanpa order:\n${yatim.map(p => p.id).join(', ')}\n\nHapus semuanya?`)) return;
+    try {
+        for (const p of yatim) await deleteDoc(doc(adminDb, "pelunasan", p.id));
+        showToast(`${yatim.length} DATA SISA DIHAPUS`);
+    } catch (e) { console.error(e); alert('Gagal membersihkan'); }
+};
+
+// Bersihkan data pelacakan "yatim": ordernya sudah dihapus tapi dokumen lacak-nya masih tersisa (masih muncul di Cek Pesanan / Cek Resi pelanggan)
+window.bersihkanLacakYatim = async () => {
+    try {
+        await loadOrders();   // muat ulang dulu supaya order yang baru masuk tidak ikut dianggap sisa
+        if (!ordersReady || ordersError) return alert('Data order gagal dimuat. Coba lagi sebentar.');
+        const kodeAda = new Set(allOrders.map(o => o.kodePelunasan).filter(Boolean));
+        const semua = await adminKodeLacakAda();
+        const yatim = [...semua].filter(k => !kodeAda.has(k));
+        if (!yatim.length) return showToast('TIDAK ADA DATA SISA');
+        if (!confirm(`Ada ${yatim.length} data pelacakan tanpa order:\n${yatim.join(', ')}\n\nHapus semuanya?`)) return;
+        let gagal = 0;
+        for (const k of yatim) { if (!(await adminHapusLacak(k))) gagal++; try { await deleteDoc(doc(adminDb, "pelunasan", k)); } catch (e) {} }
+        showToast(gagal ? `${yatim.length - gagal} DIHAPUS, ${gagal} GAGAL` : `${yatim.length} DATA SISA DIHAPUS`);
+        if (gagal) alert('Sebagian gagal dihapus. Pastikan Firestore Rules terbaru sudah dipublish.');
+    } catch (e) { console.error(e); alert('Gagal membersihkan'); }
+};
+
+window.hapusProdukOrder = async () => {
+    const yakin = confirm("Hapus semua order sesuai filter?");
+    if (!yakin) return;
+    try {
+        const data = allOrders.filter(o =>
+            (currentProdukFilter === 'semua' || (Array.isArray(o.produk) ? o.produk.some(p => p.nama === currentProdukFilter) : o.produk === currentProdukFilter))
+        );
+        if (data.length === 0) return alert("Tidak ada order untuk dihapus");
+        for (const order of data) {
+            await deleteDoc(doc(adminDb, "orders", order.id));
+            if (order.kodePelunasan) await hapusJejakOrder(order.kodePelunasan);
+        }
+        showToast(`${data.length} ORDER DIHAPUS`);
+        await loadOrders();
+    } catch(err) {
+        console.error(err);
+        alert("Gagal hapus");
+    }
+};
+
+
+// ===== STOK (per warna + ukuran, seperti Shopee) =====
+const STOK_SIZES = ['S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
+const STOK_TIPIS = 3;        // <= angka ini ditandai "menipis"
+let stokDocs = {};           // id varian -> {pid, warna, size, qty}
+const stokDirty = {};        // id produk -> true kalau ada angka yang belum disimpan
+const warnaProduk = p => String(p.warna || '').split('/').map(x => x.trim()).filter(Boolean);
+const stokDocsProduk = pid => Object.values(stokDocs).filter(d => d.pid === pid);
+
+function stokCardHTML(p) {
+    const warna = warnaProduk(p);
+    const docs = stokDocsProduk(p.id);
+    const tracked = docs.length > 0;
+    const total = docs.reduce((a, d) => a + (Number(d.qty) || 0), 0);
+    const chip = !tracked ? `<span class="stok-chip off">Belum dibatasi</span>`
+        : total <= 0 ? `<span class="stok-chip habis">HABIS</span>`
+        : `<span class="stok-chip ok">Total ${total} pcs</span>`;
+    const baris = warna.length ? warna.map(w => `
+        <tr>
+            <td class="stok-warna">${esc(w)}</td>
+            ${STOK_SIZES.map(sz => {
+                const d = stokDocs[stokId(p.id, w, sz)];
+                const q = d ? Number(d.qty) : null;
+                const cls = q === null ? '' : q <= 0 ? 'habis' : q <= STOK_TIPIS ? 'tipis' : '';
+                return `<td><input class="stok-in ${cls}" type="number" inputmode="numeric" min="0" step="1" placeholder="–"
+                    value="${q === null ? '' : q}" data-w="${esc(w)}" data-s="${sz}" oninput="stokInput('${p.id}')"></td>`;
+            }).join('')}
+            <td class="stok-sum" data-sum>0</td>
+        </tr>`).join('') : `<tr><td colspan="${STOK_SIZES.length + 2}" class="stok-kosong">Isi dulu daftar WARNA di Edit Produk.</td></tr>`;
+    return `
+        <div class="stok-head">
+            <img src="${esc(p.thumbnail || '')}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+            <div style="min-width:0;flex:1">
+                <div class="produk-name">${esc(p.nama)}</div>
+                <div class="stok-meta"><span class="produk-badge badge-${esc(p.badge)}">${esc(p.status || p.badge)}</span> ${chip}</div>
+            </div>
+        </div>
+        <div class="stok-scroll">
+            <table class="stok-table">
+                <thead><tr><th>Warna</th>${STOK_SIZES.map(sz => `<th>${sz}</th>`).join('')}<th>Total</th></tr></thead>
+                <tbody>${baris}</tbody>
+            </table>
+        </div>
+        <div class="stok-foot">
+            <small>Kosong = ukuran tidak dijual · 0 = habis. Semua kosong lalu simpan = stok tidak dibatasi.</small>
+            <span class="stok-dirty" id="stok-dirty-${p.id}" style="display:none">belum disimpan</span>
+            <button class="btn-sm btn-approve" onclick="simpanStok('${p.id}')"><i class="fas fa-save"></i> Simpan stok</button>
+        </div>`;
+}
+
+function hitungSumStok(pid) {
+    const card = document.getElementById('stok-card-' + pid);
+    if (!card) return;
+    card.querySelectorAll('tbody tr').forEach(tr => {
+        let t = 0;
+        tr.querySelectorAll('.stok-in').forEach(i => { t += Math.max(0, parseInt(i.value, 10) || 0); });
+        const c = tr.querySelector('[data-sum]');
+        if (c) c.textContent = t;
+    });
+}
+
+window.stokInput = (pid) => {
+    stokDirty[pid] = true;
+    const tag = document.getElementById('stok-dirty-' + pid);
+    if (tag) tag.style.display = 'inline-block';
+    hitungSumStok(pid);
+};
+
+function renderStok() {
+    const list = document.getElementById('stokList');
+    if (!list) return;
+    // Hanya produk READY (Pre Order tidak dibatasi stok). Produk yang sudah punya data stok tetap tampil supaya tidak "hilang".
+    const prods = allProduk
+        .filter(p => p.badge === 'ready' || p.badge === 'sold' || stokDocsProduk(p.id).length > 0)
+        .sort((a, b) => ((b.badge === 'ready') - (a.badge === 'ready')) || ((b.order || 0) - (a.order || 0)));
+    if (!prods.length) { list.innerHTML = `<div class="empty"><i class="fas fa-cubes"></i><p>Belum ada produk Ready</p></div>`; return; }
+    const ids = prods.map(p => p.id).join(',');
+    if (list.dataset.ids !== ids) {
+        list.innerHTML = prods.map(p => `<div class="stok-card" id="stok-card-${p.id}">${stokCardHTML(p)}</div>`).join('');
+        list.dataset.ids = ids;
+        Object.keys(stokDirty).forEach(k => delete stokDirty[k]);
+        prods.forEach(p => hitungSumStok(p.id));
+    } else {
+        // stok bisa berubah sendiri (ada pembeli checkout) -> segarkan kartu yang tidak sedang diketik
+        prods.forEach(p => {
+            if (stokDirty[p.id]) return;
+            const el = document.getElementById('stok-card-' + p.id);
+            if (el) { el.innerHTML = stokCardHTML(p); hitungSumStok(p.id); }
+        });
+    }
+    const all = Object.values(stokDocs);
+    const habis = all.filter(d => Number(d.qty) <= 0).length;
+    const tipis = all.filter(d => Number(d.qty) > 0 && Number(d.qty) <= STOK_TIPIS).length;
+    const sum = document.getElementById('stokSummary');
+    if (sum) sum.innerHTML = all.length
+        ? `<span class="stok-chip ${habis ? 'habis' : 'ok'}">${habis} varian habis</span> <span class="stok-chip ${tipis ? 'tipis' : 'ok'}">${tipis} menipis (≤${STOK_TIPIS})</span>`
+        : '';
+    const bd = document.getElementById('badgeStok');
+    if (bd) { const n = habis + tipis; bd.textContent = n || ''; bd.style.display = n ? '' : 'none'; }
+}
+
+window.simpanStok = async (pid) => {
+    const card = document.getElementById('stok-card-' + pid);
+    const p = allProduk.find(x => x.id === pid);
+    if (!card || !p) return;
+    const cells = [];
+    for (const inp of card.querySelectorAll('.stok-in')) {
+        const v = inp.value.trim();
+        if (v === '') { cells.push({ warna: inp.dataset.w, size: inp.dataset.s, qty: null }); continue; }
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 0) return showToast('STOK HARUS ANGKA BULAT ≥ 0', true);
+        cells.push({ warna: inp.dataset.w, size: inp.dataset.s, qty: n });
+    }
+    const btn = card.querySelector('.btn-approve');
+    if (btn) btn.disabled = true;
+    try {
+        await adminSimpanStok(pid, cells);
+        // field lama "stok" (daftar ukuran) disamakan, supaya Rekap/Pengiriman tetap jalan
+        const ukuran = STOK_SIZES.filter(sz => cells.some(c => c.size === sz && c.qty !== null && c.qty > 0));
+        if (p.badge === 'ready' && cells.some(c => c.qty !== null)) {   // artikel PO/lainnya: daftar ukuran di Edit Produk tidak disentuh
+            const stokStr = ukuran.join(' / ');
+            await updateProduk(pid, { stok: stokStr });
+            allProduk = allProduk.map(x => x.id === pid ? { ...x, stok: stokStr } : x);
+        }
+        delete stokDirty[pid];
+        const tag = document.getElementById('stok-dirty-' + pid);
+        if (tag) tag.style.display = 'none';
+        // dokumen stok yang baru ditulis akan datang lewat listener; kartu otomatis segar
+        showToast('STOK DISIMPAN ✓');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL SIMPAN STOK: ' + (e && e.code ? e.code : 'cek rules Firestore'), true);
+    }
+    if (btn) btn.disabled = false;
+};
+
+// ===== PRODUK =====
+async function loadProduk() {
+    allProduk = await getProduk();
+    produkReady = true;
+    renderProduk();
+    renderPoAdmin();
+    renderStok();
+    renderTL();
+    if (rk) rk.refresh();
+}
+
+function renderProduk() {
+    const list = document.getElementById('produkList');
+    const sortedProduk = [...allProduk].sort((a, b) => (b.order || 0) - (a.order || 0));
+
+    if (sortedProduk.length === 0) {
+        list.innerHTML = `<div class="empty"><i class="fas fa-tshirt"></i><p>Belum ada produk</p></div>`;
+        return;
+    }
+
+    list.innerHTML = `
+        <div class="produk-grid">
+            ${sortedProduk.map(p => `
+            <div class="produk-card">
+                <img src="${p.thumbnail || ''}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">
+                <div class="produk-info">
+                    <div class="produk-badge badge-${p.badge}">${p.status || p.badge}</div>
+                    <div class="produk-name">${p.nama}</div>
+                    <div class="produk-price">Rp${Number(String(p.harga).replace(/\D/g,'')).toLocaleString('id-ID')}</div>
+                    <div class="produk-actions">
+                        <div class="btn-icon" title="Naikkan" onclick="moveProdukUp('${p.id}')">↑</div>
+                        <div class="btn-icon" title="Turunkan" onclick="moveProdukDown('${p.id}')">↓</div>
+                        <div class="btn-icon" title="Edit" onclick="editProduk('${p.id}')"><i class="fas fa-pen"></i></div>
+                        <div class="btn-icon del" title="Hapus" onclick="hapusProduk('${p.id}')"><i class="fas fa-trash"></i></div>
+                    </div>
+                </div>
+            </div>`).join('')}
+        </div>`;
+}
+
+window.openModalProduk = () => {
+    editingProdukId = null;
+    document.getElementById('modalProdukTitle').innerText = 'TAMBAH PRODUK';
+    document.getElementById('pNama').value = '';
+    document.getElementById('pHarga').value = '';
+    document.getElementById('pBadge').value = 'pre';
+    document.getElementById('pStatus').value = '';
+    document.getElementById('pWarna').value = '';
+    document.getElementById('pStok').value = '';
+    isiTambahan([]);
+    document.getElementById('pSpecs').value = '';
+    document.getElementById('pShowcase').value = 'yes';
+    document.getElementById('pDP').value = 'yes';
+    document.getElementById('pDPMode').value = ''; document.getElementById('pDPVal').value = '';
+    document.getElementById('pKode').value = '';
+    toggleKodeProduk();
+    document.getElementById('prevThumb').style.display = 'none';
+    document.getElementById('prevDesain').style.display = 'none'; document.getElementById('inputDesain').value = ''; hapusDesainFlag = false;
+    [0,1,2,3,4].forEach(i => {
+        const img = document.getElementById('prevDet'+i);
+        img.src = '';
+        img.style.display = 'none';
+    });
+    document.getElementById('modalProduk').classList.add('show');
+};
+
+window.closeModalProduk = () => { document.getElementById('modalProduk').classList.remove('show'); };
+
+let hapusDesainFlag = false;
+window.hapusDesain = () => { hapusDesainFlag = true; const d = document.getElementById('prevDesain'); d.src = ''; d.style.display = 'none'; document.getElementById('inputDesain').value = ''; };
+
+window.editProduk = (id) => {
+    const p = allProduk.find(x => x.id === id);
+    if (!p) return;
+    editingProdukId = id;
+    document.getElementById('modalProdukTitle').innerText = 'EDIT PRODUK';
+    document.getElementById('pNama').value = p.nama || '';
+    document.getElementById('pHarga').value = p.harga || '';
+    document.getElementById('pBadge').value = p.badge || 'pre';
+    document.getElementById('pStatus').value = p.status || '';
+    document.getElementById('pWarna').value = p.warna || '';
+    document.getElementById('pStok').value = p.stok || '';
+    isiTambahan(p.tambahan);
+    document.getElementById('pSpecs').value = p.specs || '';
+    document.getElementById('pShowcase').value = p.showcase || 'yes';
+    document.getElementById('pDP').value = p.dpAllowed || 'yes';
+    document.getElementById('pDPMode').value = p.dpMode || ''; document.getElementById('pDPVal').value = p.dpValue || '';
+    document.getElementById('pKode').value = p.kodePrefix || '';
+    toggleKodeProduk();
+
+    const thumb = document.getElementById('prevThumb');
+    if (p.thumbnail) { thumb.src = p.thumbnail; thumb.style.display = 'block'; }
+    const des = document.getElementById('prevDesain'); document.getElementById('inputDesain').value = ''; hapusDesainFlag = false;
+    if (p.desain) { des.src = p.desain; des.style.display = 'block'; } else { des.src = ''; des.style.display = 'none'; }
+
+    const details = p.details || [];
+    [0,1,2,3,4].forEach(i => {
+        const img = document.getElementById('prevDet'+i);
+        if (details[i]) { img.src = details[i]; img.style.display = 'block'; }
+        else { img.src = ''; img.style.display = 'none'; }
+    });
+
+    document.getElementById('modalProduk').classList.add('show');
+};
+
+// ===== TAMBAHAN OPSIONAL: baris kotak input (nama, harga, centang "rekap terpisah") =====
+function barisTambahanHTML(t = {}) {
+    return `<div class="tb-row">
+        <input class="tb-nama" type="text" placeholder="Nama (mis. Lengan panjang)" value="${esc(t.nama || '')}">
+        <input class="tb-harga" type="number" inputmode="numeric" min="0" placeholder="+ Harga" value="${t.harga ?? ''}">
+        <label class="tb-pisah"><input type="checkbox" class="tb-cek" ${t.perUkuran ? 'checked' : ''}> Rekap terpisah</label>
+        <button type="button" class="tb-del" title="Hapus" onclick="this.closest('.tb-row').remove()"><i class="fas fa-trash"></i></button>
+    </div>`;
+}
+window.tambahBarisTambahan = () => {
+    const box = document.getElementById('tambahanList');
+    box.insertAdjacentHTML('beforeend', barisTambahanHTML());
+    box.lastElementChild.querySelector('.tb-nama').focus();
+};
+function isiTambahan(list) {
+    document.getElementById('tambahanList').innerHTML = (Array.isArray(list) ? list : []).map(barisTambahanHTML).join('');
+}
+// -> [{nama, harga, perUkuran}] ; null kalau ada baris yang belum lengkap
+function bacaTambahan() {
+    const out = [];
+    for (const row of document.querySelectorAll('#tambahanList .tb-row')) {
+        const nama = row.querySelector('.tb-nama').value.replace(/,/g, ' ').replace(/\s{2,}/g, ' ').trim();   // tanpa koma: di order, tambahan dipisah koma
+        const hargaTxt = row.querySelector('.tb-harga').value.trim();
+        if (!nama && !hargaTxt) continue;                       // baris kosong diabaikan
+        const harga = Number(hargaTxt);
+        if (!nama || hargaTxt === '' || !Number.isFinite(harga) || harga < 0) return null;
+        out.push({ nama, harga: Math.round(harga), perUkuran: row.querySelector('.tb-cek').checked });
+    }
+    return out;
+}
+
+window.saveProdukData = async () => {
+    const tambahan = bacaTambahan();
+    if (tambahan === null) return showToast('TAMBAHAN: isi nama DAN harga, atau hapus barisnya', true);
+    if (document.getElementById('pBadge').value === 'pre' && !bersihkanPrefix(document.getElementById('pKode').value)) {
+        return showToast('KODE AWAL ID ORDER WAJIB DIISI UNTUK PRE ORDER', true);
+    }
+    const btn = document.getElementById('btnSaveProduk');
+    btn.disabled = true;
+    btn.innerText = 'MENYIMPAN...';
+
+    try {
+        let thumbnailURL = editingProdukId ? (allProduk.find(x => x.id === editingProdukId)?.thumbnail || '') : '';
+        const thumbFile = document.getElementById('inputThumb').files[0];
+        if (thumbFile) thumbnailURL = await uploadGambar(thumbFile, 'produk');
+
+        let desainURL = editingProdukId ? (allProduk.find(x => x.id === editingProdukId)?.desain || '') : '';
+        const desainFile = document.getElementById('inputDesain').files[0];
+        if (desainFile) { const u = await uploadGambar(desainFile, 'produk'); if (u) desainURL = u; } else if (hapusDesainFlag) desainURL = '';
+
+        const details = [];
+        const existing = editingProdukId ? (allProduk.find(x => x.id === editingProdukId)?.details || []) : [];
+        for (let i = 0; i < 5; i++) {
+            const file = document.getElementById('inputDet'+i).files[0];
+            if (file) {
+                const url = await uploadGambar(file, 'produk');
+                if (url) details.push(url);
+            } else if (existing[i]) {
+                details.push(existing[i]);
+            }
+        }
+
+        const data = {
+            order: editingProdukId ? (allProduk.find(x => x.id === editingProdukId)?.order ?? 0) : Date.now(),
+            nama: document.getElementById('pNama').value,
+            harga: document.getElementById('pHarga').value,
+            badge: document.getElementById('pBadge').value,
+            status: document.getElementById('pStatus').value,
+            warna: document.getElementById('pWarna').value,
+            stok: document.getElementById('pStok').value,
+            tambahan,
+            specs: document.getElementById('pSpecs').value,
+            showcase: document.getElementById('pShowcase').value,
+            dpAllowed: document.getElementById('pDP').value,
+            ...dpMinForm('p'),
+            kodePrefix: bersihkanPrefix(document.getElementById('pKode').value),
+            thumbnail: thumbnailURL,
+            desain: desainURL,
+            details
+        };
+
+        if (editingProdukId) {
+            await updateProduk(editingProdukId, data);
+            showToast('PRODUK DIUPDATE ✓');
+        } else {
+            await saveProduk(data);
+            showToast('PRODUK DITAMBAHKAN ✓');
+        }
+
+        closeModalProduk();
+        await loadProduk();
+    } catch (err) {
+        console.error(err);
+        showToast('GAGAL SIMPAN!', true);
+    }
+    btn.disabled = false;
+    btn.innerText = 'SIMPAN';
+};
+
+window.hapusProduk = async (id) => {
+    if (!confirm('Hapus produk ini?')) return;
+    await deleteProduk(id);
+    allProduk = allProduk.filter(p => p.id !== id);
+    renderProduk();
+    showToast('PRODUK DIHAPUS');
+};
+
+window.moveProdukUp = async (id) => {
+    const sortedProduk = [...allProduk].sort((a, b) => (b.order || 0) - (a.order || 0));
+    const index = sortedProduk.findIndex(p => p.id === id);
+    if (index <= 0) return;
+    const current = sortedProduk[index];
+    const prev = sortedProduk[index - 1];
+    const temp = current.order;
+    await updateProduk(current.id, { order: prev.order });
+    await updateProduk(prev.id, { order: temp });
+    await loadProduk();
+};
+
+window.moveProdukDown = async (id) => {
+    const sortedProduk = [...allProduk].sort((a, b) => (b.order || 0) - (a.order || 0));
+    const index = sortedProduk.findIndex(p => p.id === id);
+    if (index >= sortedProduk.length - 1) return;
+    const current = sortedProduk[index];
+    const next = sortedProduk[index + 1];
+    const temp = current.order;
+    await updateProduk(current.id, { order: next.order });
+    await updateProduk(next.id, { order: temp });
+    await loadProduk();
+};
+
+// ===== AKSESORIS =====
+// Sama seperti Produk (Pre Order / Ready / Sold Out jadi satu daftar), tetapi TANPA warna, ukuran & tambahan (desain 3D opsional: dipajang di game menggantikan thumbnail).
+// Koleksi Firestore "aksesoris". Stok = satu angka per aksesoris di koleksi "stok" (id stokIdAks) -> checkout memotong, order ditolak mengembalikan.
+let akStokAwal = null;   // angka stok saat form dibuka (supaya stok yang berubah karena order tidak tertimpa angka basi)
+const stokAksDirty = {};
+const stokAksDoc = pid => stokDocs[stokIdAks(pid)] || null;
+async function loadAksesoris() {
+    try { allAks = await getAksesoris(); }
+    catch (e) {
+        console.error('Gagal baca aksesoris', e);
+        allAks = [];
+        showToast('AKSESORIS GAGAL DIMUAT: ' + errMsg(e) + ' (sudah publish firestore.rules terbaru?)', true);
+    }
+    renderAksesoris(); renderPoAdmin(); renderStokAks(); renderTL();
+}
+function chipStokAks(p) {
+    if (p.badge === 'pre') return '';
+    const d = stokAksDoc(p.id);
+    if (!d) return '<div class="stok-chip off" style="margin-top:6px">Stok belum dibatasi</div>';
+    const q = Number(d.qty) || 0;
+    return q <= 0 ? '<div class="stok-chip habis" style="margin-top:6px">HABIS</div>' : `<div class="stok-chip ${q <= STOK_TIPIS ? 'tipis' : 'ok'}" style="margin-top:6px">Stok ${q}</div>`;
+}
+function renderAksesoris() {
+    const list = document.getElementById('aksesorisList');
+    if (!list) return;
+    const sorted = [...allAks].sort((a, b) => (b.order || 0) - (a.order || 0));
+    if (!sorted.length) { list.innerHTML = `<div class="empty"><i class="fas fa-glasses"></i><p>Belum ada aksesoris</p></div>`; return; }
+    list.innerHTML = `
+        <div class="produk-grid">
+            ${sorted.map(p => `
+            <div class="produk-card">
+                <img src="${esc(p.thumbnail || '')}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">
+                <div class="produk-info">
+                    <div class="produk-badge badge-${esc(p.badge)}">${esc(p.status || p.badge)}</div>
+                    <div class="produk-name">${esc(p.nama)}</div>
+                    <div class="produk-price">Rp${Number(String(p.harga).replace(/\D/g, '')).toLocaleString('id-ID')}</div>
+                    ${p.besar ? '<div class="stok-chip off" style="margin-top:6px">BESAR · tembok</div>' : ''}
+                    ${chipStokAks(p)}
+                    <div class="produk-actions">
+                        <div class="btn-icon" title="Naikkan" onclick="moveAksesorisUp('${p.id}')">↑</div>
+                        <div class="btn-icon" title="Turunkan" onclick="moveAksesorisDown('${p.id}')">↓</div>
+                        <div class="btn-icon" title="Edit" onclick="editAksesoris('${p.id}')"><i class="fas fa-pen"></i></div>
+                        <div class="btn-icon del" title="Hapus" onclick="hapusAksesoris('${p.id}')"><i class="fas fa-trash"></i></div>
+                    </div>
+                </div>
+            </div>`).join('')}
+        </div>`;
+}
+
+window.toggleAksesorisForm = () => {
+    dpMinUI('ak');
+    const kode = bersihkanPrefix(document.getElementById('akKode').value) || 'FVCK';
+    document.getElementById('akKodeContoh').innerText = kode;
+    const badge = document.getElementById('akBadge').value;
+    document.querySelector('#akKodeWrap label').innerText = badge === 'pre' ? 'KODE AWAL ID ORDER (WAJIB)' : 'KODE AWAL ID ORDER';
+    document.getElementById('akStokWrap').style.display = badge === 'ready' ? '' : 'none';
+};
+window.addEventListener('DOMContentLoaded', () => {
+    const k = document.getElementById('akKode'); if (k) k.addEventListener('input', () => window.toggleAksesorisForm());
+    const h = document.getElementById('akHarga'); if (h) h.addEventListener('input', e => { e.target.value = formatHarga(e.target.value); });
+});
+
+let hapusDesainAksFlag = false;
+window.hapusDesainAks = () => { hapusDesainAksFlag = true; const d = document.getElementById('prevAkDesain'); d.src = ''; d.style.display = 'none'; document.getElementById('inputAkDesain').value = ''; };
+function aksResetFoto(details = [], thumb = '', desain = '') {
+    const ds = document.getElementById('prevAkDesain'); document.getElementById('inputAkDesain').value = ''; hapusDesainAksFlag = false;
+    if (desain) { ds.src = desain; ds.style.display = 'block'; } else { ds.src = ''; ds.style.display = 'none'; }
+    const t = document.getElementById('prevAkThumb'); document.getElementById('inputAkThumb').value = '';
+    if (thumb) { t.src = thumb; t.style.display = 'block'; } else { t.src = ''; t.style.display = 'none'; }
+    [0, 1, 2, 3, 4].forEach(i => {
+        const img = document.getElementById('prevAkDet' + i); document.getElementById('inputAkDet' + i).value = '';
+        if (details[i]) { img.src = details[i]; img.style.display = 'block'; } else { img.src = ''; img.style.display = 'none'; }
+    });
+}
+window.openModalAksesoris = () => {
+    editingAksId = null; akStokAwal = null;
+    document.getElementById('modalAksesorisTitle').innerText = 'TAMBAH AKSESORIS';
+    document.getElementById('akNama').value = '';
+    document.getElementById('akHarga').value = '';
+    document.getElementById('akBadge').value = 'pre';
+    document.getElementById('akStatus').value = '';
+    document.getElementById('akStok').value = '';
+    document.getElementById('akSpecs').value = '';
+    document.getElementById('akDP').value = 'yes';
+    document.getElementById('akDPMode').value = ''; document.getElementById('akDPVal').value = '';
+    document.getElementById('akShowcase').value = 'yes';
+    document.getElementById('akBesar').checked = false;
+    document.getElementById('akKode').value = '';
+    aksResetFoto();
+    toggleAksesorisForm();
+    document.getElementById('modalAksesoris').classList.add('show');
+};
+window.closeModalAksesoris = () => { document.getElementById('modalAksesoris').classList.remove('show'); };
+window.editAksesoris = (id) => {
+    const p = allAks.find(x => x.id === id);
+    if (!p) return;
+    editingAksId = id;
+    document.getElementById('modalAksesorisTitle').innerText = 'EDIT AKSESORIS';
+    document.getElementById('akNama').value = p.nama || '';
+    document.getElementById('akHarga').value = p.harga || '';
+    document.getElementById('akBadge').value = p.badge || 'pre';
+    document.getElementById('akStatus').value = p.status || '';
+    const d = stokAksDoc(id);
+    akStokAwal = d ? Number(d.qty) || 0 : null;
+    document.getElementById('akStok').value = akStokAwal === null ? '' : akStokAwal;
+    document.getElementById('akSpecs').value = p.specs || '';
+    document.getElementById('akDP').value = p.dpAllowed || 'yes';
+    document.getElementById('akDPMode').value = p.dpMode || ''; document.getElementById('akDPVal').value = p.dpValue || '';
+    document.getElementById('akShowcase').value = p.showcase || 'yes';
+    document.getElementById('akBesar').checked = !!p.besar;
+    document.getElementById('akKode').value = p.kodePrefix || '';
+    aksResetFoto(p.details || [], p.thumbnail || '', p.desain || '');
+    toggleAksesorisForm();
+    document.getElementById('modalAksesoris').classList.add('show');
+};
+
+window.saveAksesorisData = async () => {
+    const badge = document.getElementById('akBadge').value;
+    const nama = document.getElementById('akNama').value.trim();
+    if (!nama) return showToast('NAMA AKSESORIS WAJIB DIISI', true);
+    if (badge === 'pre' && !bersihkanPrefix(document.getElementById('akKode').value)) {
+        return showToast('KODE AWAL ID ORDER WAJIB DIISI UNTUK PRE ORDER', true);
+    }
+    // stok (hanya relevan untuk READY). '' = tidak dibatasi
+    let stokBaru; // undefined = jangan sentuh
+    if (badge === 'ready') {
+        const v = document.getElementById('akStok').value.trim();
+        if (v === '') stokBaru = null;
+        else { const n = Number(v); if (!Number.isInteger(n) || n < 0) return showToast('STOK HARUS ANGKA BULAT ≥ 0', true); stokBaru = n; }
+    }
+    const btn = document.getElementById('btnSaveAksesoris');
+    btn.disabled = true; btn.innerText = 'MENYIMPAN...';
+    try {
+        const lama = editingAksId ? allAks.find(x => x.id === editingAksId) : null;
+        let thumbnailURL = lama?.thumbnail || '';
+        const thumbFile = document.getElementById('inputAkThumb').files[0];
+        if (thumbFile) { const u = await uploadGambar(thumbFile, 'produk'); if (u) thumbnailURL = u; }
+
+        let desainURL = lama?.desain || '';
+        const desainFile = document.getElementById('inputAkDesain').files[0];
+        if (desainFile) { const u = await uploadGambar(desainFile, 'produk'); if (u) desainURL = u; } else if (hapusDesainAksFlag) desainURL = '';
+
+        const details = [], existing = lama?.details || [];
+        for (let i = 0; i < 5; i++) {
+            const file = document.getElementById('inputAkDet' + i).files[0];
+            if (file) { const url = await uploadGambar(file, 'produk'); if (url) details.push(url); }
+            else if (existing[i]) details.push(existing[i]);
+        }
+
+        const data = {
+            order: lama ? (lama.order ?? 0) : Date.now(),
+            nama,
+            harga: document.getElementById('akHarga').value,
+            badge,
+            status: document.getElementById('akStatus').value,
+            specs: document.getElementById('akSpecs').value,
+            dpAllowed: document.getElementById('akDP').value,
+            ...dpMinForm('ak'),
+            showcase: document.getElementById('akShowcase').value,
+            besar: document.getElementById('akBesar').checked,
+            kodePrefix: bersihkanPrefix(document.getElementById('akKode').value),
+            thumbnail: thumbnailURL,
+            desain: desainURL,
+            details
+        };
+
+        let id = editingAksId;
+        if (id) { await updateAksesoris(id, data); }
+        else { id = await saveAksesoris(data); }
+
+        // stok: hanya ditulis kalau angkanya memang diubah di form ini
+        if (stokBaru !== undefined && (!editingAksId || stokBaru !== akStokAwal)) {
+            try { await adminSimpanStokAks(id, stokBaru); }
+            catch (e) { console.error(e); showToast('AKSESORIS TERSIMPAN, STOK GAGAL: ' + errMsg(e), true); }
+        }
+        showToast(editingAksId ? 'AKSESORIS DIUPDATE ✓' : 'AKSESORIS DITAMBAHKAN ✓');
+        closeModalAksesoris();
+        await loadAksesoris();
+    } catch (err) {
+        console.error(err);
+        showToast('GAGAL SIMPAN: ' + errMsg(err), true);
+    }
+    btn.disabled = false; btn.innerText = 'SIMPAN';
+};
+
+window.hapusAksesoris = async (id) => {
+    if (!confirm('Hapus aksesoris ini? (stoknya ikut dihapus)')) return;
+    try {
+        await deleteAksesoris(id);
+        allAks = allAks.filter(p => p.id !== id);
+        renderAksesoris(); renderPoAdmin(); renderStokAks();
+        showToast('AKSESORIS DIHAPUS');
+    } catch (e) { console.error(e); showToast('GAGAL HAPUS: ' + errMsg(e), true); }
+};
+async function geserAksesoris(id, arah) {
+    const sorted = [...allAks].sort((a, b) => (b.order || 0) - (a.order || 0));
+    const i = sorted.findIndex(p => p.id === id), j = i + arah;
+    if (i < 0 || j < 0 || j >= sorted.length) return;
+    const a = sorted[i], b = sorted[j];
+    try {
+        await updateAksesoris(a.id, { order: b.order }); await updateAksesoris(b.id, { order: a.order });
+        await loadAksesoris();
+    } catch (e) { console.error(e); showToast('GAGAL: ' + errMsg(e), true); }
+}
+window.moveAksesorisUp = id => geserAksesoris(id, -1);
+window.moveAksesorisDown = id => geserAksesoris(id, 1);
+
+// ----- Tab STOK: bagian aksesoris (satu angka per aksesoris) -----
+function stokAksCardHTML(p) {
+    const d = stokAksDoc(p.id);
+    const q = d ? Number(d.qty) || 0 : null;
+    const chip = q === null ? `<span class="stok-chip off">Belum dibatasi</span>`
+        : q <= 0 ? `<span class="stok-chip habis">HABIS</span>` : `<span class="stok-chip ${q <= STOK_TIPIS ? 'tipis' : 'ok'}">Sisa ${q} pcs</span>`;
+    const cls = q === null ? '' : q <= 0 ? 'habis' : q <= STOK_TIPIS ? 'tipis' : '';
+    return `
+        <div class="stok-head">
+            <img src="${esc(p.thumbnail || '')}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+            <div style="min-width:0;flex:1">
+                <div class="produk-name">${esc(p.nama)}</div>
+                <div class="stok-meta"><span class="produk-badge badge-${esc(p.badge)}">${esc(p.status || p.badge)}</span> ${chip}</div>
+            </div>
+        </div>
+        <div class="stok-aks-row">
+            <input class="stok-in ${cls}" type="number" inputmode="numeric" min="0" step="1" placeholder="–" value="${q === null ? '' : q}" oninput="stokAksInput('${p.id}')">
+            <small>Kosong = tidak dibatasi · 0 = habis.</small>
+            <span class="stok-dirty" id="stokaks-dirty-${p.id}" style="display:none">belum disimpan</span>
+            <button class="btn-sm btn-approve" onclick="simpanStokAks('${p.id}')"><i class="fas fa-save"></i> Simpan stok</button>
+        </div>`;
+}
+window.stokAksInput = (pid) => {
+    stokAksDirty[pid] = true;
+    const tag = document.getElementById('stokaks-dirty-' + pid);
+    if (tag) tag.style.display = 'inline-block';
+};
+function renderStokAks() {
+    const wrap = document.getElementById('stokAksWrap'), list = document.getElementById('stokAksList');
+    if (!wrap || !list) return;
+    // Pre Order tidak dibatasi stok; aksesoris yang sudah punya data stok tetap tampil supaya tidak "hilang"
+    const prods = allAks.filter(p => p.badge === 'ready' || p.badge === 'sold' || stokAksDoc(p.id))
+        .sort((a, b) => ((b.badge === 'ready') - (a.badge === 'ready')) || ((b.order || 0) - (a.order || 0)));
+    wrap.style.display = prods.length ? '' : 'none';
+    if (!prods.length) { list.innerHTML = ''; return; }
+    const ids = prods.map(p => p.id).join(',');
+    if (list.dataset.ids !== ids) {
+        list.innerHTML = prods.map(p => `<div class="stok-card" id="stokaks-card-${p.id}">${stokAksCardHTML(p)}</div>`).join('');
+        list.dataset.ids = ids;
+        Object.keys(stokAksDirty).forEach(k => delete stokAksDirty[k]);
+    } else {
+        prods.forEach(p => {     // stok bisa berubah sendiri (pembeli checkout) -> segarkan kartu yang tidak sedang diketik
+            if (stokAksDirty[p.id]) return;
+            const el = document.getElementById('stokaks-card-' + p.id);
+            if (el) el.innerHTML = stokAksCardHTML(p);
+        });
+    }
+}
+window.simpanStokAks = async (pid) => {
+    const card = document.getElementById('stokaks-card-' + pid);
+    if (!card) return;
+    const v = card.querySelector('.stok-in').value.trim();
+    let qty = null;
+    if (v !== '') { const n = Number(v); if (!Number.isInteger(n) || n < 0) return showToast('STOK HARUS ANGKA BULAT ≥ 0', true); qty = n; }
+    const btn = card.querySelector('.btn-approve'); if (btn) btn.disabled = true;
+    try {
+        await adminSimpanStokAks(pid, qty);
+        delete stokAksDirty[pid];
+        renderStokAks(); renderAksesoris();      // segarkan kartu (snapshot lokal sudah datang saat kartu masih ditandai "belum disimpan")
+        showToast('STOK AKSESORIS DISIMPAN ✓');
+    } catch (e) { console.error(e); showToast('GAGAL SIMPAN STOK: ' + errMsg(e), true); }
+    if (btn) btn.disabled = false;
+};
+
+// ===== GALERI =====
+async function loadGaleri() {
+    allGaleri = await getGaleri();
+    renderGaleri();
+}
+
+function renderGaleri() {
+    const grid = document.getElementById('galeriGrid');
+    grid.innerHTML = allGaleri.map(g => `
+        <div class="galeri-item">
+            <img src="${g.url}" loading="lazy">
+            <div class="galeri-del" onclick="hapusGaleri('${g.id}')"><i class="fas fa-times"></i></div>
+            <div class="galeri-move">
+                <button onclick="moveGaleriUp('${g.id}')">↑</button>
+                <button onclick="moveGaleriDown('${g.id}')">↓</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+window.uploadGaleriFoto = async (input) => {
+    const files = [...input.files];
+    if (!files.length) return;
+    const overlay = document.getElementById('uploadOverlay');
+    const text = document.getElementById('uploadText');
+    overlay.style.display = 'flex';
+    let success = 0;
+
+    for (let i = 0; i < files.length; i++) {
+        text.innerText = `MENGUPLOAD FOTO ${i + 1} / ${files.length}`;
+        const file = files[i];
+        const url = await uploadGambar(file, 'galeri');
+        if (url) { await saveGaleri(url); success++; }
+    }
+    overlay.style.display = 'none';
+    await loadGaleri();
+    input.value = '';
+    showToast(success + ' FOTO BERHASIL ✓');
+};
+
+window.hapusGaleri = async (id) => {
+    await deleteGaleri(id);
+    allGaleri = allGaleri.filter(g => g.id !== id);
+    renderGaleri();
+    showToast('FOTO DIHAPUS');
+};
+
+window.moveGaleriUp = async (id) => {
+    const index = allGaleri.findIndex(g => g.id === id);
+    if (index <= 0) return;
+    const temp = allGaleri[index].order;
+    await updateGaleri(allGaleri[index].id, { order: allGaleri[index-1].order });
+    await updateGaleri(allGaleri[index-1].id, { order: temp });
+    await loadGaleri();
+};
+
+window.moveGaleriDown = async (id) => {
+    const index = allGaleri.findIndex(g => g.id === id);
+    if (index >= allGaleri.length - 1) return;
+    const temp = allGaleri[index].order;
+    await updateGaleri(allGaleri[index].id, { order: allGaleri[index+1].order });
+    await updateGaleri(allGaleri[index+1].id, { order: temp });
+    await loadGaleri();
+};
+
+// ===== IMG PREVIEW =====
+window.prevImgSlot = (input, previewId) => {
+    const file = input.files[0];
+    if (!file) return;
+    const img = document.getElementById(previewId);
+    const reader = new FileReader();
+    reader.onload = e => { img.src = e.target.result; img.style.display = 'block'; };
+    reader.readAsDataURL(file);
+};
+
+// ===== BANNERS =====
+async function loadBanners() {
+    listenBanners((data) => {
+        allBanners = data;
+        renderBanners();
+    });
+}
+
+function renderBanners() {
+    const list = document.getElementById('bannerList');
+    if (allBanners.length === 0) {
+        list.innerHTML = `<div class="empty"><i class="fas fa-flag"></i><p>Belum ada banner</p></div>`;
+        return;
+    }
+    list.innerHTML = `<div class="produk-grid">` + allBanners.map((b, i) => `
+        <div class="produk-card">
+            <img src="${b.image}" loading="lazy" alt="" style="aspect-ratio: 16/9;">
+            <div class="produk-info">
+                <div class="produk-name">${b.title || 'Tanpa Judul'}</div>
+                <div class="produk-actions" style="margin-top:12px;">
+                    <div class="btn-icon" onclick="moveBannerUp('${b.id}', ${i})">↑</div>
+                    <div class="btn-icon" onclick="moveBannerDown('${b.id}', ${i})">↓</div>
+                    <div class="btn-icon" onclick="editBanner('${b.id}')"><i class="fas fa-pen"></i></div>
+                    <div class="btn-icon del" onclick="hapusBanner('${b.id}')"><i class="fas fa-trash"></i></div>
+                </div>
+            </div>
+        </div>
+    `).join('') + `</div>`;
+}
+
+window.openModalBanner = () => {
+    editingBannerId = null;
+    document.getElementById('modalBannerTitle').innerText = 'TAMBAH BANNER';
+    document.getElementById('bTitle').value = '';
+    document.getElementById('bSub').value = '';
+    document.getElementById('bLink').value = '';
+    document.getElementById('prevBanner').src = '';
+    document.getElementById('prevBanner').style.display = 'none';
+    document.getElementById('modalBanner').classList.add('show');
+};
+
+window.closeModalBanner = () => { document.getElementById('modalBanner').classList.remove('show'); };
+
+window.editBanner = (id) => {
+    const b = allBanners.find(x => x.id === id);
+    if (!b) return;
+    editingBannerId = id;
+    document.getElementById('modalBannerTitle').innerText = 'EDIT BANNER';
+    document.getElementById('bTitle').value = b.title || '';
+    document.getElementById('bSub').value = b.subtitle || '';
+    document.getElementById('bLink').value = b.link || '';
+    if(b.image) {
+        document.getElementById('prevBanner').src = b.image;
+        document.getElementById('prevBanner').style.display = 'block';
+    }
+    document.getElementById('modalBanner').classList.add('show');
+};
+
+window.saveBannerData = async () => {
+    const btn = document.getElementById('btnSaveBanner');
+    btn.disabled = true; btn.innerText = 'MENYIMPAN...';
+    try {
+        let imageURL = editingBannerId ? (allBanners.find(x => x.id === editingBannerId)?.image || '') : '';
+        const file = document.getElementById('inputBanner').files[0];
+        if (file) imageURL = await uploadGambar(file, 'galeri');
+        if (!imageURL) throw new Error("Gambar wajib diisi!");
+
+        const data = {
+            title: document.getElementById('bTitle').value,
+            subtitle: document.getElementById('bSub').value,
+            link: document.getElementById('bLink').value,
+            image: imageURL,
+            order: editingBannerId ? allBanners.find(x => x.id === editingBannerId).order : Date.now()
+        };
+
+        if (editingBannerId) await updateBanner(editingBannerId, data);
+        else await saveBanner(data);
+
+        showToast('BANNER DISIMPAN ✓');
+        closeModalBanner();
+    } catch (err) { showToast('GAGAL SIMPAN!', true); }
+    btn.disabled = false; btn.innerText = 'SIMPAN';
+};
+
+window.hapusBanner = async (id) => {
+    if (!confirm('Hapus banner ini?')) return;
+    await deleteBanner(id);
+    showToast('BANNER DIHAPUS');
+};
+
+window.moveBannerUp = async (id, index) => {
+    if (index <= 0) return;
+    const temp = allBanners[index].order;
+    await updateBanner(allBanners[index].id, { order: allBanners[index-1].order });
+    await updateBanner(allBanners[index-1].id, { order: temp });
+};
+
+window.moveBannerDown = async (id, index) => {
+    if (index >= allBanners.length - 1) return;
+    const temp = allBanners[index].order;
+    await updateBanner(allBanners[index].id, { order: allBanners[index+1].order });
+    await updateBanner(allBanners[index+1].id, { order: temp });
+};
+
+// TEKS GARIS BANNER
+listenBannerText((data) => {
+    document.getElementById('bTextTop').value = data.topText || '';
+    document.getElementById('bTextBottom').value = data.bottomText || '';
+});
+
+window.openModalBannerText = () => { document.getElementById('modalBannerText').classList.add('show'); };
+window.closeModalBannerText = () => { document.getElementById('modalBannerText').classList.remove('show'); };
+
+window.saveBannerTextData = async () => {
+    const btn = document.getElementById('btnSaveBannerText');
+    btn.disabled = true; btn.innerText = 'MENYIMPAN...';
+    try {
+        await saveBannerText({
+            topText: document.getElementById('bTextTop').value,
+            bottomText: document.getElementById('bTextBottom').value
+        });
+        showToast('TEKS BANNER DISIMPAN ✓');
+        closeModalBannerText();
+    } catch(err) { showToast('GAGAL SIMPAN!', true); }
+    btn.disabled = false; btn.innerText = 'SIMPAN';
+};
+
+
+// Info pembayaran Midtrans di kartu order
+function payInfoHTML(o) {
+    let h = '';
+    if (o.payVia === 'midtrans') {
+        h += `<div class="info-item">Bayar via <span>Midtrans${o.payMethod ? ' · ' + esc(o.payMethod) : ''}${o.payMethodLunas ? ' · pelunasan ' + esc(o.payMethodLunas) : ''}</span></div>`;
+    } else if (o.payMode && (o.status || 'pending') === 'pending') {
+        h += `<div class="info-item">Pilihan bayar <span>${o.payMode === 'dp' ? 'DP ' + rp(o.payAmount) : 'Lunas'} · menunggu pembayaran Midtrans</span></div>`;
+    }
+    if (o.payAnomali) h += `<div class="info-item warn">Cek dashboard Midtrans <span>${esc(o.payAnomali)} (bayar dobel / telat / refund)</span></div>`;
+    return h;
+}
+
+// ===== PENGATURAN MINIMAL DP =====
+const fmtPayVal = (mode, v) => mode === 'percent' ? String(Number(v) || '') : (Number(v) ? Number(v).toLocaleString('id-ID') : '');
+window.openModalPayment = async () => {
+    const s = await getPaymentSettings();
+    $('payDpMode').value = s.dpMode === 'percent' ? 'percent' : 'nominal';
+    $('payDpValue').value = fmtPayVal($('payDpMode').value, s.dpValue);
+    window.gantiModePay(true);
+    $('modalPayment').classList.add('show');
+};
+window.closeModalPayment = () => $('modalPayment').classList.remove('show');
+window.gantiModePay = (keep) => {
+    const m = $('payDpMode').value;
+    $('payDpLabel').innerText = m === 'percent' ? 'PERSEN (%)' : 'NOMINAL (Rp)';
+    $('payDpValue').placeholder = m === 'percent' ? 'mis. 35' : 'mis. 70.000';
+    if (keep !== true) $('payDpValue').value = '';
+    window.updatePayPreview();
+};
+const bacaPayVal = () => {
+    const m = $('payDpMode').value, raw = $('payDpValue').value;
+    return m === 'percent' ? (Number(raw.replace(',', '.').replace(/[^\d.]/g, '')) || 0) : (Number(raw.replace(/\D/g, '')) || 0);
+};
+window.updatePayPreview = (typing) => {
+    const m = $('payDpMode').value;
+    if (typing === true && m === 'nominal') { const n = bacaPayVal(); $('payDpValue').value = n ? n.toLocaleString('id-ID') : ''; }
+    const v = bacaPayVal(), s = { dpMode: m, dpValue: v };
+    const rows = [150000, 250000, 350000].map(t => `Total ${rp(t)} &rarr; DP minimal <b>${v ? rp(hitungMinDP(t, s)) : '-'}</b>`).join('<br>');
+    $('payPreview').innerHTML = rows + (m === 'percent' ? '<br><span style="color:var(--muted)">Hasil persen dibulatkan ke kelipatan Rp5.000 terdekat (87.500 jadi 90.000, 86.000 jadi 85.000).</span>' : '');
+};
+window.savePaymentData = async () => {
+    const m = $('payDpMode').value, v = bacaPayVal();
+    if (m === 'percent' && !(v > 0 && v < 100)) return showToast('PERSEN HARUS ANTARA 1 - 99', true);
+    if (m === 'nominal' && v < 1000) return showToast('NOMINAL MINIMAL Rp1.000', true);
+    const btn = $('btnSavePayment');
+    btn.disabled = true; btn.innerText = 'MENYIMPAN...';
+    try {
+        await savePaymentSettings({ dpMode: m, dpValue: v });
+        showToast('MINIMAL DP DISIMPAN ✓');
+        closeModalPayment();
+    } catch (e) { console.error(e); showToast('GAGAL SIMPAN: ' + errMsg(e), true); }
+    btn.disabled = false; btn.innerText = 'SIMPAN';
+};
+
+// ===== VOUCHER =====
+async function loadVouchers() {
+    listenVouchers(data => {
+        allVouchers = data;
+        renderVouchers();
+    });
+}
+
+function renderVouchers() {
+    const list = document.getElementById('voucherList');
+    if (allVouchers.length === 0) {
+        list.innerHTML = `<div class="empty"><i class="fas fa-ticket-alt"></i><p>Belum ada voucher</p></div>`;
+        return;
+    }
+    list.innerHTML = `<div class="produk-grid">` + allVouchers.map(v => {
+        const isHabis = Number(v.kuota) <= 0;
+        const badgeClass = isHabis ? 'badge-sold' : 'badge-pre';
+        const badgeText = isHabis ? 'HABIS' : `KUOTA: ${v.kuota}`;
+        let deskripsi = "Gratis Ongkir";
+        if(v.tipe === 'nominal') deskripsi = `Diskon Rp${Number(v.nilai).toLocaleString('id-ID')}`;
+        if(v.tipe === 'persen') deskripsi = `Diskon ${v.nilai}%`;
+
+        return `
+        <div class="produk-card voucher-card" style="${isHabis ? 'border-left-color:var(--red);opacity:.75' : ''}">
+            <div class="produk-badge ${badgeClass}">${badgeText}</div>
+            <div class="voucher-code">${v.kode}</div>
+            <div class="voucher-desc">${deskripsi}</div>
+            <div class="produk-actions">
+                <div class="btn-icon del" onclick="hapusVoucher('${v.id}')"><i class="fas fa-trash"></i> Hapus</div>
+            </div>
+        </div>`;
+    }).join('') + `</div>`;
+}
+
+window.toggleNilaiVoucher = () => {
+    const t = document.getElementById('vTipe').value;
+    document.getElementById('wrapNilaiVoucher').style.display = (t === 'free_ongkir') ? 'none' : 'block';
+};
+
+window.openModalVoucher = () => {
+    document.getElementById('vKode').value = '';
+    document.getElementById('vTipe').value = 'free_ongkir';
+    document.getElementById('vNilai').value = '';
+    document.getElementById('vKuota').value = '';
+    toggleNilaiVoucher();
+    document.getElementById('modalVoucher').classList.add('show');
+};
+
+window.closeModalVoucher = () => document.getElementById('modalVoucher').classList.remove('show');
+
+window.saveVoucherData = async () => {
+    const kode = document.getElementById('vKode').value.trim().toUpperCase();
+    const tipe = document.getElementById('vTipe').value;
+    const nilai = document.getElementById('vNilai').value;
+    const kuota = document.getElementById('vKuota').value;
+
+    if(!kode || !kuota || (tipe !== 'free_ongkir' && !nilai)) return showToast('LENGKAPI DATA!', true);
+
+    const btn = document.getElementById('btnSaveVoucher');
+    btn.disabled = true; btn.innerText = "MENYIMPAN...";
+    try {
+        await saveVoucher({ kode, tipe, nilai: Number(nilai||0), kuota: Number(kuota) });
+        showToast("VOUCHER DISIMPAN ✓");
+        closeModalVoucher();
+    } catch(e) { showToast("GAGAL SIMPAN", true); }
+    btn.disabled = false; btn.innerText = "SIMPAN";
+};
+
+window.hapusVoucher = async (id) => {
+    if(!confirm('Hapus voucher ini?')) return;
+    try { await deleteVoucher(id); showToast("VOUCHER DIHAPUS"); }
+    catch(e) { showToast("GAGAL HAPUS", true); }
+};
+
+let currentPelangganSubTab = 'member';
+let memberDeleteMode = false;
+let pembeliDeleteMode = false;
+
+window.switchPelangganSubTab = (tab) => {
+    currentPelangganSubTab = tab;
+    document.getElementById('subtab-member-btn').classList.toggle('active', tab === 'member');
+    document.getElementById('subtab-pembeli-btn').classList.toggle('active', tab === 'pembeli');
+    document.getElementById('memberList').style.display = tab === 'member' ? 'block' : 'none';
+    document.getElementById('pembeliList').style.display = tab === 'pembeli' ? 'block' : 'none';
+    updatePelangganDeleteBtn();
+};
+
+// Tombol hapus di sebelah TAB PEMBELI: sekali pencet -> tampilkan icon x di tiap baris
+// list yang sedang aktif. Pencet lagi -> icon x disembunyikan lagi (batal, tanpa menghapus apa pun).
+window.togglePelangganDeleteMode = () => {
+    if (currentPelangganSubTab === 'member') memberDeleteMode = !memberDeleteMode;
+    else pembeliDeleteMode = !pembeliDeleteMode;
+    updatePelangganDeleteBtn();
+    renderCustomers();
+};
+
+function updatePelangganDeleteBtn() {
+    const btn = document.getElementById('pelangganDeleteBtn');
+    if (!btn) return;
+    const active = currentPelangganSubTab === 'member' ? memberDeleteMode : pembeliDeleteMode;
+    btn.classList.toggle('active-del', active);
+}
+
+// ===== CUSTOMER LIST =====
+let customersLoaded = false;
+
+async function loadCustomersList() {
+    listenCustomers(
+        (data) => {
+            allCustomers = data;
+            customersLoaded = true;
+            renderCustomers();
+        },
+        (err) => {
+            showToast('GAGAL AMBIL DATA MEMBER: ' + (err.code || err.message || 'unknown'), true);
+            const errMsg = `<div class="empty"><i class="fas fa-triangle-exclamation"></i><p>Gagal memuat data<br>(${err.code || 'error'})</p></div>`;
+            const memberList = document.getElementById('memberList');
+            const pembeliList = document.getElementById('pembeliList');
+            if (memberList) memberList.innerHTML = errMsg;
+            if (pembeliList) pembeliList.innerHTML = errMsg;
+        }
+    );
+}
+
+function aggregateCustomers() {
+    const map = {};
+
+    allCustomers.forEach(c => {
+        const key = (c.email || '').toLowerCase();
+        if (!key) return;
+        map[key] = map[key] || {
+            email: c.email, uid: c.uid || c.id,
+            registered: true, registeredAt: c.createdAt, lastLoginAt: c.lastLoginAt || null,
+            purchaseCount: 0, totalSpent: 0, orders: []
+        };
+        map[key].registered = true;
+        map[key].lastLoginAt = c.lastLoginAt || map[key].lastLoginAt;
+    });
+
+    allOrders.forEach(o => {
+        const email = (o.email || '').toLowerCase();
+        if (!email) return;
+        map[email] = map[email] || {
+            email: o.email, registered: false, lastLoginAt: null,
+            purchaseCount: 0, totalSpent: 0, orders: []
+        };
+        map[email].purchaseCount++;
+        map[email].totalSpent += Number(String(o.totalAkhir || 0).replace(/\D/g,''));
+        map[email].orders.push(o);
+    });
+
+    return Object.values(map).sort((a, b) => b.purchaseCount - a.purchaseCount);
+}
+
+function safeIdFor(prefix, email) {
+    return prefix + '-' + btoa(unescape(encodeURIComponent(email))).replace(/=/g,'').replace(/\//g,'_').replace(/\+/g,'-');
+}
+
+function formatTanggalWaktu(iso) {
+    if (!iso) return null;
+    try {
+        return new Date(iso).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
+    } catch (e) { return null; }
+}
+
+function renderCustomers() {
+    renderMemberTab();
+    renderPembeliTab();
+}
+
+// ── TAB MEMBER ──────────────────────────────────────────────
+function renderMemberTab() {
+    const list = document.getElementById('memberList');
+    if (!list) return;
+
+    const data = aggregateCustomers()
+        .filter(c => c.registered)
+        .sort((a, b) => (a.email || '').localeCompare(b.email || ''));
+
+    if (data.length === 0) {
+        list.innerHTML = `<div class="empty"><i class="fas fa-users"></i><p>Belum ada member</p></div>`;
+        return;
+    }
+
+    list.innerHTML = data.map(c => {
+        const safeId = safeIdFor('mem', c.email);
+        const lastLogin = formatTanggalWaktu(c.lastLoginAt) || 'Belum ada data login';
+
+        const deleteArea = memberDeleteMode
+            ? `<button class="del-x" onclick="event.stopPropagation(); confirmDeleteCustomer('member','${c.email}')" title="Hapus">&times;</button>`
+            : '';
+
+        return `
+        <div class="cust-card">
+            <div class="cust-row" onclick="toggleCustDetail('${safeId}')">
+                <span class="cust-email"><span class="cust-avatar">${esc((c.email || '?').charAt(0))}</span><span>${c.email}</span></span>
+                <span class="cust-trail">${deleteArea}<i class="fas fa-chevron-down" style="color:var(--muted);font-size:12px"></i></span>
+            </div>
+            <div class="cust-detail" id="${safeId}" style="display:none;">
+                <div><b>Email:</b> ${c.email}</div>
+                <div><b>Total pembelian:</b> ${c.purchaseCount} kali</div>
+                <div><b>Total transaksi:</b> Rp${c.totalSpent.toLocaleString('id-ID')}</div>
+                <div><b>Terakhir login:</b> ${lastLogin}</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ── TAB PEMBELI ─────────────────────────────────────────────
+function renderPembeliTab() {
+    const list = document.getElementById('pembeliList');
+    if (!list) return;
+
+    const data = aggregateCustomers().filter(c => c.purchaseCount > 0);
+
+    if (data.length === 0) {
+        list.innerHTML = `<div class="empty"><i class="fas fa-bag-shopping"></i><p>Belum ada pembeli</p></div>`;
+        return;
+    }
+
+    list.innerHTML = data.map(c => {
+        const safeId = safeIdFor('buy', c.email);
+
+        const trailingArea = `<span class="cust-count">${c.purchaseCount}x beli</span>`
+            + (pembeliDeleteMode
+                ? `<button class="del-x" onclick="event.stopPropagation(); confirmDeleteCustomer('pembeli','${c.email}')" title="Hapus">&times;</button>`
+                : '');
+
+        return `
+        <div class="cust-card">
+            <div class="cust-row" onclick="toggleCustDetail('${safeId}')">
+                <span class="cust-email"><span class="cust-avatar">${esc((c.email || '?').charAt(0))}</span><span>${c.email}</span></span>
+                <span class="cust-trail">${trailingArea}</span>
+            </div>
+            <div class="cust-detail" id="${safeId}" style="display:none;">
+                <div><b>Email:</b> ${c.email}</div>
+                <div><b>Total pembelian:</b> ${c.purchaseCount} kali</div>
+                <div><b>Total transaksi:</b> Rp${c.totalSpent.toLocaleString('id-ID')}</div>
+                <div style="color:${c.registered ? 'var(--green)' : 'var(--muted)'}; margin-top:6px;">${c.registered ? '✓ Terdaftar sebagai member' : '✕ Tidak terdaftar sebagai member'}</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+window.toggleCustDetail = (safeId) => {
+    const el = document.getElementById(safeId);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+};
+
+window.confirmDeleteCustomer = async (tab, email) => {
+    const key = email.toLowerCase();
+    const target = allCustomers.find(c => (c.email || '').toLowerCase() === key);
+    try {
+        if (target) await deleteCustomer(target.id);
+        allCustomers = allCustomers.filter(c => (c.email || '').toLowerCase() !== key);
+        renderCustomers();
+        showToast('DATA MEMBER DIHAPUS');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL HAPUS', true);
+    }
+};
+
+// ===== HELPER: FORMAT HARGA =====
+function formatHarga(value) {
+    let angka = String(value).toLowerCase().replace(/\s/g, '');
+    if (angka.includes('k')) angka = angka.replace('k', '000');
+    angka = angka.replace(/\D/g, '');
+    return Number(angka || 0).toLocaleString('id-ID');
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    const hargaInput = document.getElementById('pHarga');
+    if (!hargaInput) return;
+    hargaInput.addEventListener('input', (e) => {
+        const cursor = e.target.selectionStart;
+        e.target.value = formatHarga(e.target.value);
+        e.target.setSelectionRange(cursor, cursor);
+    });
+});
+
+// ===== KODE AWAL ID ORDER (form artikel) =====
+/* Minimal DP per produk (kosong = ikut pengaturan umum). pre = 'p' (produk) atau 'ak' (aksesoris) */
+const dpMinForm = (pre) => {
+    const ok = document.getElementById(pre + 'DP').value === 'yes';
+    const mode = document.getElementById(pre + 'DPMode').value;
+    let val = Number(String(document.getElementById(pre + 'DPVal').value).replace(/\D/g, '')) || 0;
+    if (!ok || !mode || val <= 0) return { dpMode: '', dpValue: 0 };
+    if (mode === 'percent') val = Math.min(val, 99);
+    return { dpMode: mode, dpValue: val };
+};
+window.dpMinUI = (pre) => {
+    const w = document.getElementById(pre + 'DPMinWrap'); if (!w) return;
+    w.style.display = document.getElementById(pre + 'DP').value === 'yes' ? '' : 'none';
+    const mode = document.getElementById(pre + 'DPMode').value;
+    const v = document.getElementById(pre + 'DPVal');
+    v.style.display = mode ? '' : 'none';
+    v.placeholder = mode === 'percent' ? 'Isi persen, mis. 30 (artinya 30%)' : 'Isi rupiah, mis. 70000';
+    const t = document.getElementById(pre + 'DPHint');
+    if (t) t.textContent = mode ? '' : 'Kosong = ikut pengaturan Minimal DP umum (tab Order).';
+};
+window.toggleKodeProduk = () => {
+    dpMinUI('p');
+    const v = bersihkanPrefix(document.getElementById('pKode').value) || 'FVCK';
+    document.getElementById('pKodeContoh').innerText = v;
+    const pre = document.getElementById('pBadge').value === 'pre';
+    document.querySelector('#pKodeWrap label').innerText = pre ? 'KODE AWAL ID ORDER (WAJIB)' : 'KODE AWAL ID ORDER';
+};
+window.addEventListener('DOMContentLoaded', () => {
+    const k = document.getElementById('pKode');
+    if (k) k.addEventListener('input', () => window.toggleKodeProduk());
+});
+
+function totalOrder(o) { return Number(o.totalAkhir || o.hargaKaos || 0); }
+function namaProdukText(o) {
+    return o.produkText || (Array.isArray(o.produk) ? o.produk.map(p => p.nama).join(', ') : (o.produk || ''));
+}
+function prefixUntukOrder(o) {
+    if (o.kodePrefix) return o.kodePrefix;
+    const namaList = Array.isArray(o.produk) ? o.produk.map(p => p.nama) : [o.produk];
+    for (const n of namaList) {
+        const p = allProduk.find(x => x.nama === n && x.kodePrefix);
+        if (p) return p.kodePrefix;
+    }
+    return '';
+}
+function fmtAdminWaktu(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? '-' : d.toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/* ================= ARTIKEL PRE ORDER (selesaikan artikel) ================= */
+function ordersUntukPO(p) {
+    return allOrders.filter(o => o.status !== 'rejected' &&
+        ((o.poIds || []).includes(p.id) || (Array.isArray(o.produk) ? o.produk.some(x => x.nama === p.nama) : o.produk === p.nama)));
+}
+window.renderPoAdmin = (force) => {
+    const box = document.getElementById('poList');
+    if (!box) return;
+    const ae = document.activeElement;
+    if (!force && ae && box.contains(ae) && ae.tagName === 'INPUT') return;   // jangan timpa yang sedang diketik
+    const prods = allProduk.concat(allAks.map(a => ({ ...a, _aks: true })))
+        .filter(p => p.badge === 'pre' || p.poClosed)
+        .sort((a, b) => Number(!!a.poClosed) - Number(!!b.poClosed));
+    if (!prods.length) {
+        box.innerHTML = `<div class="empty"><i class="fas fa-flag-checkered"></i><p>Belum ada artikel Pre Order</p></div>`;
+        return;
+    }
+    box.innerHTML = prods.map(p => {
+        const closed = !!p.poClosed;
+        const ords = ordersUntukPO(p);
+        const lunasN = ords.filter(o => o.status === 'lunas').length;
+        return `
+        <div class="order-card ${closed ? 'st-rejected' : 'st-lunas'}" style="${closed ? 'opacity:.85' : ''}">
+            <div class="oc-head">
+                <div>
+                    <div class="order-name">${esc(p.nama)}</div>
+                    <div class="oc-meta">
+                        <span class="chip id">${esc(p.kodePrefix || 'kode belum diisi')}</span>${p._aks ? '<span class="chip">aksesoris</span>' : ''}
+                        <span class="chip">${ords.length} order</span>
+                        <span class="chip ready">${lunasN} lunas</span>
+                    </div>
+                </div>
+                <div class="status-badge ${closed ? 's-rejected' : 's-approved'}">${closed ? 'PO SELESAI' : 'BERJALAN'}</div>
+            </div>
+            <div class="oc-section">
+            <div class="oc-sec-title">Update artikel <span style="text-transform:none;letter-spacing:0;font-weight:500">· tampil di Pantau semua order artikel ini</span></div>
+            <div id="poU-${p.id}"></div>
+            <div class="oc-row" style="margin-top:12px">
+                <input type="text" class="oc-input" style="flex:1;min-width:200px;width:auto" id="poIn-${p.id}" maxlength="500" placeholder="mis. Kaos dikirim" onkeydown="if(event.key==='Enter'){tambahUpdatePo('${p.id}')}">
+                <button type="button" onclick="tambahUpdatePo('${p.id}')" class="btn-sm btn-approve" style="flex:none"><i class="fas fa-plus"></i> Tambah update</button>
+            </div>
+            <div class="oc-hint">Tanggal &amp; jam otomatis. Hanya muncul di order yang dibuat sebelum update ini.</div>
+            </div>
+            <div class="oc-section">
+            ${closed
+                ? `<button onclick="tutupPo('${p.id}', false)" class="btn-sm btn-bukti btn-block"><i class="fas fa-undo"></i> Batalkan "PO selesai"</button>`
+                : `<button onclick="tutupPo('${p.id}', true)" class="btn-sm btn-approve btn-block"><i class="fas fa-flag-checkered"></i> Selesaikan artikel Pre Order</button>`}
+            </div>
+        </div>`;
+    }).join('');
+    ensurePoUpdSubs(prods.map(p => p.id));
+    prods.forEach(p => renderPoUpdBox(p.id));
+};
+function renderPoUpdBox(pid) {
+    const box = document.getElementById('poU-' + pid);
+    if (!box) return;
+    const list = poUpd[pid] || [];
+    box.innerHTML = list.length ? list.map((e, i) => {
+        const iso = tsMillis(e.createdAt) ? new Date(tsMillis(e.createdAt)).toISOString() : '';
+        const auto = e.type === 'automatic';
+        return `
+        <div class="po-timeline-item">
+            <span class="po-dot ${auto ? 'auto' : 'manual'}"></span>
+            <div style="flex:1;min-width:0">
+                <div style="font-size:14px;font-weight:600;word-break:break-word">${esc(e.text)}</div>
+                <div class="order-time">${iso ? esc(fmtAdminWaktu(iso)) : 'menyimpan…'}</div>
+            </div>
+            ${auto ? '' : `<button class="icon-del" onclick="hapusUpdatePo('${pid}','${esc(e.id)}')" title="Hapus update"><i class="fas fa-trash"></i></button>`}
+        </div>`;
+    }).join('') : '<div class="oc-hint" style="margin:0">Belum ada update artikel.</div>';
+}
+window.tambahUpdatePo = async (pid) => {
+    const inp = document.getElementById('poIn-' + pid);
+    if (!inp) return;
+    const t = inp.value.trim();
+    if (!t) { showToast('KETIK KETERANGAN DULU!', true); inp.focus(); return; }
+    try { await adminTambahUpdatePo(pid, t); inp.value = ''; showToast('UPDATE ARTIKEL DITAMBAHKAN ✓'); }
+    catch (e) { console.error(e); showToast('GAGAL: ' + errMsg(e), true); }
+};
+window.hapusUpdatePo = async (pid, id) => {
+    if (!confirm('Hapus update artikel ini? (hilang dari timeline semua order artikel ini)')) return;
+    try { await adminHapusUpdatePo(pid, id); showToast('UPDATE DIHAPUS'); }
+    catch (e) { console.error(e); showToast('GAGAL: ' + errMsg(e), true); }
+};
+window.tutupPo = async (pid, closed) => {
+    const p = allProduk.find(x => x.id === pid) || allAks.find(x => x.id === pid);
+    if (!p) return;
+    const isAks = !allProduk.some(x => x.id === pid);
+    const msg = closed
+        ? `Tandai PO "${p.nama}" SELESAI?\n\nDi Pantau semua order artikel ini muncul keterangan "Pre Order selesai". Katalog TIDAK ditutup: masih bisa dibeli selama badge belum SOLD OUT.`
+        : `Batalkan tanda "PO selesai" untuk "${p.nama}"?`;
+    if (!confirm(msg)) return;
+    try {
+        await adminTutupPo(pid, p.nama, closed, isAks ? 'aksesoris' : 'produk');
+        if (isAks) allAks = allAks.map(x => x.id === pid ? { ...x, poClosed: closed } : x);
+        else allProduk = allProduk.map(x => x.id === pid ? { ...x, poClosed: closed } : x);
+        renderPoAdmin(true);
+        showToast(closed ? 'PO DITANDAI SELESAI ✓' : 'TANDA PO SELESAI DIBATALKAN');
+    } catch (e) {
+        console.error(e);
+        showToast('GAGAL: ' + errMsg(e), true);
+    }
+};
+
+/* ================= REKAP PESANAN & PENGIRIMAN (admin-kirim.js) ================= */
+// Memakai data allOrders/allProduk yang sama dengan tab ORDER. Penulisan: statusKirim (field baru, hanya admin lewat rules orders update)
+// dan resi lewat adminSimpanResi() yang sudah ada (order + Pantau/Cek Resi).
+// Dimuat dengan import() dinamis: bila file ini gagal dimuat, fitur admin lama tetap berjalan normal.
+import('./web-admin-kirim.js?v=20261025').then(({ initRekapKirim }) => {
+    rk = initRekapKirim({
+        getOrders: () => allOrders,
+        getProduk: () => allProduk,
+        getState: () => ({ ordersReady, produkReady, error: ordersError }),
+        reload: async () => { ordersReady = false; ordersError = ''; rk.refresh(true); await loadOrders(); },
+        idOrder, totalOrder, errMsg,
+        toast: (m, isErr) => window.showToast(m, isErr),
+        setStatusKirim: (o, status) => updateDoc(doc(adminDb, 'orders', o.id), { statusKirim: status }),
+        simpanResi: (o, resi) => adminSimpanResi(o, resi),
+        patchOrder: (id, patch) => { allOrders = allOrders.map(x => x.id === id ? { ...x, ...patch } : x); renderOrders(true); }
+    });
+    rk.refresh();
+}).catch(e => console.error('Modul Rekap/Pengiriman gagal dimuat:', e));
+
+
+// ===== TATA LETAK (urutan kartu di web utama) =====
+// Disimpan di settings/tataLetak: { home, preorder, katalog, arsip } = daftar id (produk & aksesoris campur).
+// Item yang belum tercantum tampil paling atas (supaya produk baru langsung kelihatan).
+const TL_SEC = { home: 'Beranda', preorder: 'Pre Order', katalog: 'Katalog', arsip: 'Arsip' };
+let tlStored = {}, tlDraft = {}, tlSec = 'home';
+function tlItems(key) {
+    const all = [...allProduk.map(p => ({ ...p, _t: 'Produk' })), ...allAks.map(p => ({ ...p, _t: 'Aksesoris' }))]
+        .sort((a, b) => (b.order || 0) - (a.order || 0));
+    return all.filter(p => key === 'home' ? (p.showcase || 'no') === 'yes'
+        : key === 'preorder' ? p.badge === 'pre' : key === 'katalog' ? p.badge === 'ready' : p.badge === 'sold');
+}
+function tlEfektif(key) {
+    const items = tlItems(key);
+    const ids = tlDraft[key] || (Array.isArray(tlStored[key]) ? tlStored[key] : []);
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    const baru = items.filter(p => !pos.has(p.id));
+    const lama = items.filter(p => pos.has(p.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id));
+    return { list: [...baru, ...lama], baru: new Set(baru.map(p => p.id)), adaLayout: ids.length > 0 };
+}
+function renderTL() {
+    const chips = document.getElementById('tlChips'), list = document.getElementById('tlList');
+    if (!chips || !list) return;
+    chips.innerHTML = Object.entries(TL_SEC).map(([k, n]) => `<div class="tl-chip ${k === tlSec ? 'on' : ''}" onclick="setTLSection('${k}')">${n}<small>${tlItems(k).length}${tlDraft[k] ? ' •' : ''}</small></div>`).join('');
+    const { list: items, baru, adaLayout } = tlEfektif(tlSec);
+    document.getElementById('tlInfo').innerHTML = (tlSec === 'home' ? 'Beranda hanya berisi item dengan <b>Tampilkan di beranda = Ya</b>. ' : '') +
+        (tlDraft[tlSec] ? '<b>Ada perubahan belum disimpan.</b>' : (adaLayout ? 'Urutan khusus aktif.' : 'Belum disusun: memakai urutan bawaan (terbaru di atas).'));
+    if (!items.length) { list.innerHTML = '<div class="empty"><i class="fas fa-arrows-up-down"></i><p>Belum ada item di halaman ini</p></div>'; return; }
+    list.innerHTML = `<div class="produk-grid">${items.map((p, i) => {
+        const isBaru = baru.has(p.id) && adaLayout;
+        const badge = ['pre', 'ready', 'sold'].includes(p.badge) ? p.badge : 'pre';
+        return `
+        <div class="produk-card tl-card ${isBaru ? 'baru' : ''}">
+            <div class="tl-no">${i + 1}</div>
+            <img src="${esc(p.thumbnail || '')}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+            <div class="produk-info">
+                <div class="produk-badge badge-${badge}">${esc(p.status || p.badge || '')}</div>
+                <div class="produk-name">${esc(p.nama)}</div>
+                <div class="tl-tipe">${p._t}${isBaru ? ' · baru (di atas)' : ''}</div>
+                <div class="produk-actions">
+                    <div class="btn-icon" title="Paling atas" onclick="tlMove('${p.id}','top')">⤒</div>
+                    <div class="btn-icon" title="Naik" onclick="tlMove('${p.id}','up')">↑</div>
+                    <div class="btn-icon" title="Turun" onclick="tlMove('${p.id}','down')">↓</div>
+                </div>
+            </div>
+        </div>`;
+    }).join('')}</div>`;
+}
+window.setTLSection = k => { tlSec = k; renderTL(); };
+window.tlMove = (id, dir) => {
+    const ids = tlEfektif(tlSec).list.map(p => p.id);
+    const i = ids.indexOf(id); if (i < 0) return;
+    if (dir === 'top') { ids.splice(i, 1); ids.unshift(id); }
+    else { const j = dir === 'up' ? i - 1 : i + 1; if (j < 0 || j >= ids.length) return; [ids[i], ids[j]] = [ids[j], ids[i]]; }
+    tlDraft[tlSec] = ids; renderTL();
+};
+window.simpanTL = async () => {
+    if (!Object.keys(tlDraft).length) return showToast('BELUM ADA PERUBAHAN');
+    const btn = document.getElementById('btnSimpanTL'); btn.disabled = true; btn.innerText = 'MENYIMPAN...';
+    try {
+        const data = {}; Object.keys(TL_SEC).forEach(k => { if (Array.isArray(tlStored[k])) data[k] = tlStored[k]; });
+        Object.assign(data, tlDraft);
+        await saveTataLetak(data);
+        tlStored = data; tlDraft = {}; renderTL();
+        showToast('TATA LETAK TERSIMPAN ✓');
+    } catch (e) { console.error(e); showToast('GAGAL SIMPAN: ' + errMsg(e), true); }
+    btn.disabled = false; btn.innerText = 'SIMPAN URUTAN';
+};
+window.resetTL = async () => {
+    if (!confirm('Kembalikan halaman "' + TL_SEC[tlSec] + '" ke urutan bawaan (terbaru di atas)?')) return;
+    try {
+        const data = {}; Object.keys(TL_SEC).forEach(k => { if (Array.isArray(tlStored[k])) data[k] = tlStored[k]; });
+        data[tlSec] = []; delete tlDraft[tlSec];
+        await saveTataLetak(data); tlStored = data; renderTL();
+        showToast('URUTAN DIRESET ✓');
+    } catch (e) { console.error(e); showToast('GAGAL RESET: ' + errMsg(e), true); }
+};

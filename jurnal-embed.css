@@ -1,0 +1,33 @@
+/* Panel Jurnal di dalam shell: isi & fungsi tetap, tampilan disamakan dengan tema web utama
+   (terang, lavender, garis hitam, tombol bulat, font Gaegu + Inter). */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Gaegu:wght@400;700&display=swap');
+:root, html.embedded {
+  --bg:#fbf3fd; --ink:#111111; --muted:#6b6b68; --line:#d6d6d4; --panel:#ffffff;
+  --turf:#111111; --turf-d:#111111; --chalk:#ffffff; --bib:#ffd51e; --red:#c4302b; --focus:#1d6fa5;
+  --head:'Gaegu','Patrick Hand','Comic Sans MS',cursive;
+  --body:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root, html.embedded { --bg:#fbf3fd; --ink:#111111; --muted:#6b6b68; --line:#d6d6d4; --panel:#ffffff; --focus:#1d6fa5; --red:#c4302b; }
+}
+html.embedded #chrome-top, html.embedded #chrome-bottom,
+html.embedded .adm > h1, html.embedded .adm > .tabs { display: none !important; }
+html.embedded body { font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+html.embedded .adm { max-width: 1180px; padding: 24px 28px 70px; }
+@media (max-width: 760px) { html.embedded .adm { padding: 18px 14px 80px; } }
+html.embedded h1, html.embedded h2, html.embedded h3 { letter-spacing: 0; line-height: 1.05; }
+html.embedded h3 { font-weight: 700; }
+html.embedded .btn { border-radius: 999px; border: 2px solid #111; background: #111; color: #fff; font-size: 1.15rem; box-shadow: 0 3px 0 #111; }
+html.embedded .btn.ghost { background: #fff; color: #111; }
+html.embedded .btn.bib { background: #5be39a; border-color: #111; color: #111; }
+html.embedded .btn.danger { background: #fff; border-color: var(--red); color: var(--red); box-shadow: 0 3px 0 var(--red); }
+html.embedded .btn:active { transform: translateY(2px); box-shadow: 0 1px 0 #111; }
+html.embedded input, html.embedded textarea, html.embedded select { background: #fff; border: 2px solid #111; border-radius: 12px; }
+html.embedded .tile, html.embedded .box, html.embedded .notice { background: #fff; border: 2px solid #111; border-radius: 18px; box-shadow: 0 3px 0 #111; }
+html.embedded .notice.bad { border-color: var(--red); box-shadow: 0 3px 0 var(--red); }
+html.embedded .tile b { font-weight: 700; }
+html.embedded .count { border-radius: 999px; background: #f26a35; color: #fff; }
+html.embedded dialog { background: #fff; border-radius: 18px; }
+html.embedded dialog::backdrop { background: rgba(17,17,17,.55); }
+html.embedded .toast { border-radius: 999px; background: #111; color: #fff; }
+html.embedded .tbl th { border-bottom-color: #111; }

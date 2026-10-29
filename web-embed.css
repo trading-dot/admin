@@ -1,0 +1,8 @@
+/* Panel Web Utama di dalam shell: tema asli admin.css dipertahankan, hanya navigasi bawaan yang disembunyikan
+   (diganti hamburger di shell). */
+html.embedded .sidebar,
+html.embedded .mobile-header,
+html.embedded .mobile-nav { display: none !important; }
+html.embedded .main { margin: 0 auto !important; padding: 24px 28px 70px !important; max-width: 1180px; min-height: 0; }
+@media (max-width: 760px) { html.embedded .main { padding: 18px 14px 80px !important; } }
+html.embedded body { min-height: 0; }
