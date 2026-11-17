@@ -11,6 +11,8 @@ const NAV = [
       ["overview", "Overview"], ["review", "AI review"], ["articles", "Articles"], ["discussion", "Discussion"], ["settings", "Settings"] ] },
   { id: "keuangan", label: "Keuangan", icon: "fa-wallet", src: "keuangan.html", tabs: [
       ["dash", "Dasbor"], ["masuk", "Pemasukan"], ["keluar", "Pengeluaran"], ["kaos", "Rekap Kaos"], ["ongkir", "Ongkir"] ] },
+  { id: "kota", label: "Kota", icon: "fa-city", src: "kota.html", tabs: [
+      ["progres", "Progres"], ["galeri", "Galeri Kota"] ] },
   { id: "ai", label: "AI Office", icon: "fa-robot", href: "https://ai.fucktherules.my.id" },
 ];
 

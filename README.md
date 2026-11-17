@@ -7,6 +7,7 @@ Admin gabungan FVCKTHERULES: **satu login**, menu hamburger, kategori -> sub tab
 | Web Utama | admin web utama (`web*.html/js/css`) | Order, Rekap Pesanan, Pengiriman, Artikel PO, Produk, Aksesoris, Tata Letak, Stok, Voucher, Galeri, Banner, Member |
 | Jurnal | admin jurnal (`jurnal*`) | Overview, AI review, Articles, Discussion, Settings |
 | Keuangan | aplikasi keuangan (`keuangan*`) | Dasbor, Pemasukan, Pengeluaran, Rekap Kaos, Ongkir |
+| Kota | tab baru `kota.*` (Progres) | Progres |
 | AI Office | tautan ke https://ai.fucktherules.my.id | - |
 
 ## Cara kerja

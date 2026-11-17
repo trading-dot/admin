@@ -1,6 +1,7 @@
 // Satu kali login untuk semua panel. Sesi Firebase disimpan per-origin, jadi iframe di domain ini
 // otomatis ikut login selama nama app + apiKey-nya sama dengan yang dipakai tiap panel.
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+import { CITY, cityReady } from "./kota-config.js";
 import {
   getAuth, signInWithEmailAndPassword, signInWithPopup, signInWithCredential,
   GoogleAuthProvider, onAuthStateChanged, signOut
@@ -17,6 +18,7 @@ const others = {
   "Jurnal": getAuth(initializeApp(JURNAL, "jurnalAdmin")),
   "Keuangan": getAuth(initializeApp(KEU, "keuanganAdmin")),
 };
+if (cityReady()) others["Kota"] = getAuth(initializeApp(CITY, "cityAdmin"));
 
 export const onSession = (fn) => onAuthStateChanged(gate, fn);
 

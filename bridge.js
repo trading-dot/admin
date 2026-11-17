@@ -22,6 +22,10 @@
       go: function (t) { var b = document.querySelector('[data-tab="' + t + '"]'); if (b) b.click(); },
       ok: function (t) { var b = document.querySelector('[data-tab="' + t + '"]'); return !!b && b.getAttribute('aria-selected') === 'true'; }
     },
+    kota: {
+      go: function (t) { if (window.kotaTab) window.kotaTab(t); },
+      ok: function (t) { return window.__kotaTab === t; }
+    },
     keuangan: {
       go: function (t) { if (location.hash.slice(1) !== t) location.hash = '#' + t; else { var b = document.querySelector('#side [data-nav="' + t + '"]'); if (b) b.click(); } },
       ok: function (t) { var v = document.getElementById('v-' + t); return !!v && !v.classList.contains('hide'); }
