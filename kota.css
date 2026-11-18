@@ -18,13 +18,18 @@ h2{margin:0 0 4px;font-size:18px}.k-muted{color:var(--mu);font-size:13px;margin:
 .k-toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#fff;color:#111;padding:9px 14px;border-radius:10px;font-weight:700;font-size:13px;opacity:0;pointer-events:none;transition:.2s;max-width:90vw;z-index:9}
 .k-toast.show{opacity:1}.k-steps label{display:block;margin:8px 0 2px;color:var(--mu);font-size:12px}.k-steps textarea{width:100%;min-height:52px}
 .k-err{color:var(--bad);font-size:12px}
-.cu{display:grid;gap:8px;color:#efece0;font:14px/1.4 Inter,Arial,sans-serif}.cu-lab{margin-top:6px;font-weight:800;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#d7ff3f}
-.cu-in{width:100%;background:#22241f;color:#efece0;border:1px solid #4a4d44;border-radius:10px;padding:10px 12px;font-size:15px;font-family:inherit}
-.cu-btn{background:#22241f;color:#efece0;border:1px solid #4a4d44;border-radius:10px;padding:10px 12px;font-weight:700;font-size:14px;white-space:nowrap}.cu-btn.ac{background:#d7ff3f;color:#171914;border-color:#d7ff3f;padding:12px}.cu-btn:disabled{opacity:.5}
-.cu-row{display:flex;gap:6px}.cu-row .cu-in{flex:1;min-width:0}.cu-hint{margin:0;color:#bdbaa9;font-size:12.5px;min-height:1em}
-.cu-prev{max-height:160px;max-width:100%;border-radius:10px;object-fit:cover}.cu-host{position:relative;border-radius:12px;overflow:hidden;border:1px solid #4a4d44}
-.cu-map{display:block;width:100%;height:270px;touch-action:none;cursor:crosshair;background:#1d3b52}.cu-real{height:230px;background:#222}.cu-real.dark .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9)}
-.cu-zoom{position:absolute;right:8px;top:8px;display:grid;gap:4px}.cu-zoom button{width:34px;height:34px;border-radius:8px;border:0;background:rgba(23,25,20,.85);color:#fff;font-size:20px;line-height:1}
-
+/* ===== form upload (variabel agar admin bisa tema gelap) ===== */
+.cu{--c-bg:#fff;--c-tx:#111;--c-mu:#7a766f;--c-bd:#111;--c-ac:#ffd51e;display:grid;gap:8px;color:var(--c-tx);font:14px/1.4 var(--font)}
+.cu-lab{margin-top:6px;font-weight:800;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--c-mu)}
+.cu-in{width:100%;background:var(--c-bg);color:var(--c-tx);border:2px solid var(--c-bd);border-radius:12px;padding:10px 12px;font:15px var(--font)}
+.cu-btn{background:var(--c-bg);color:var(--c-tx);border:2px solid var(--c-bd);border-radius:12px;padding:10px 12px;font:800 14px var(--font);white-space:nowrap;box-shadow:0 2px 0 var(--c-bd)}.cu-btn.ac{background:var(--c-ac);color:#111;padding:12px}.cu-btn:disabled{opacity:.5}
+.cu-row{display:flex;gap:6px}.cu-row .cu-in{flex:1;min-width:0}.cu-hint{margin:0;color:var(--c-mu);font-size:12.5px;min-height:1em}
+.cu-prev{max-height:160px;max-width:100%;border-radius:12px;object-fit:cover;border:2px solid var(--c-bd)}.cu-host{position:relative;border-radius:14px;overflow:hidden;border:2px solid var(--c-bd)}
+.cu-map{display:block;width:100%;height:300px;touch-action:none;cursor:pointer;background:#1d3b52}.cu-real{height:230px;background:#222}.osm-dark{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9)}
+.cu-zoom{position:absolute;right:8px;top:8px;display:grid;gap:4px}.cu-zoom button{width:34px;height:34px;border-radius:10px;border:2px solid #111;background:#fff;color:#111;font-size:20px;line-height:1}
+.cu{--c-bg:#0d1913;--c-tx:#e8efe9;--c-mu:#8fa597;--c-bd:#24392e;--c-ac:#d7ff3f}.cu-btn{box-shadow:none}
 .k-gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.k-card{background:#0d1913;border:1px solid var(--line);border-radius:10px;overflow:hidden;display:grid}
 .k-card img{width:100%;height:130px;object-fit:cover;display:block}.k-card div{padding:8px;font-size:12px;display:grid;gap:4px}.k-card .k-bar{gap:4px}.k-card .k-btn{padding:6px 8px;font-size:12px}
+.k-art{display:grid;grid-template-columns:auto 52px 1fr;gap:10px;align-items:center;padding:10px 4px;border-top:1px solid var(--line)}.k-art:first-child{border-top:0}
+.k-art img,.k-art .k-ph{width:52px;height:52px;border-radius:10px;object-fit:cover;background:#1b3226;border:1px solid var(--line)}.k-art .k-ph{display:grid;place-items:center;color:var(--mu);font-size:11px}
+.k-art .k-bar{grid-column:2/4;gap:6px}

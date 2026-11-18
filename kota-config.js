@@ -4,3 +4,5 @@ export const CITY = { apiKey: "AIzaSyDphf7cMy_Qlbjfr3kzmWtvhq13vvzwKUw", authDom
 export const cityReady = () => !!CITY.projectId;
 
 export const CLOUD = { cloud: "dpkmdjfbt", preset: "gloriam-galeri", folder: "fttr-city" };
+export const STORE_BASE = "https://fucktherules.my.id/";
+export const CITY_SITE = "https://city.fucktherules.my.id/";
