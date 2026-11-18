@@ -15,7 +15,7 @@ export async function loadCityMap({base='',live=null}={}){
   if(live){try{return live();}catch(e){console.warn('peta live gagal',e);}}
   return fallbackMap();}
 
-export function cityPicker(host,{map,onPick,onMiss}={}){
+export function cityPicker(host,{map,onPick}={}){
   const cv=el('canvas','cu-map'),ctx=cv.getContext('2d'),B=map.bounds,boxes=map.boxes.map(b=>({...b,cx:(b.x1+b.x2)/2,cz:(b.z1+b.z2)/2,area:(b.x2-b.x1)*(b.z2-b.z1)}));
   let W=0,H=0,s=1,fit=1,ox=(B.x1+B.x2)/2,oz=(B.z1+B.z2)/2,sel=null;host.append(cv);
   const sx=x=>(x-ox)*s+W/2,sz=z=>(z-oz)*s+H/2,wx=px=>(px-W/2)/s+ox,wz=py=>(py-H/2)/s+oz,ppu=map.img?map.img.width/(B.x2-B.x1):1;
@@ -29,9 +29,10 @@ export function cityPicker(host,{map,onPick,onMiss}={}){
     if(sel){const x=sx(sel.x1),y=sz(sel.z1),w=(sel.x2-sel.x1)*s,h=(sel.z2-sel.z1)*s;ctx.fillStyle='rgba(255,213,30,.38)';ctx.fillRect(x,y,w,h);ctx.strokeStyle='#111';ctx.lineWidth=3;ctx.strokeRect(x,y,w,h);ctx.strokeStyle='#ffd51e';ctx.lineWidth=1.5;ctx.strokeRect(x,y,w,h);
       const px=x+w/2,py=y+h/2;ctx.fillStyle='#e5484d';ctx.strokeStyle='#fff';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(px,py-16,10,0,6.283);ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(px-6,py-9);ctx.lineTo(px,py);ctx.lineTo(px+6,py-9);ctx.fill();ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(px,py-16,3.5,0,6.283);ctx.fill();
       const t=sel.name;ctx.font='800 12px Inter,Arial,sans-serif';const tw=ctx.measureText(t).width+16;ctx.fillStyle='#111';ctx.fillRect(px-tw/2,py-48,tw,20);ctx.fillStyle='#ffd51e';ctx.fillText(t,px,py-38);}}
-  function pickAt(px,py){const x=wx(px),z=wz(py);let best=null,ba=1e12;
-    boxes.forEach(b=>{if(x>=b.x1&&x<=b.x2&&z>=b.z1&&z<=b.z2&&b.area<ba){best=b;ba=b.area;}});
-    if(best)return best;let bd=26/s;boxes.forEach(b=>{const dx=Math.max(b.x1-x,0,x-b.x2),dz=Math.max(b.z1-z,0,z-b.z2),d=Math.hypot(dx,dz);if(d<bd){bd=d;best=b;}});return best;}
+  function pickAt(px,py){const x=wx(px),z=wz(py),tol=8/s;let best=null,ba=1e12;
+    boxes.forEach(b=>{if(x>=b.x1-tol&&x<=b.x2+tol&&z>=b.z1-tol&&z<=b.z2+tol&&b.area<ba){best=b;ba=b.area;}});return best;}
+  function areaOf(x,z){let best=null,bd=30;boxes.forEach(b=>{const dx=Math.max(b.x1-x,0,x-b.x2),dz=Math.max(b.z1-z,0,z-b.z2),d=Math.hypot(dx,dz);if(d<bd){bd=d;best=b;}});return best?'Dekat '+best.name:'Jalan kota';}
+  function chooseFree(x,z){x=Math.round(x*10)/10;z=Math.round(z*10)/10;const nm=areaOf(x,z);sel={free:true,id:'',name:nm,x1:x,x2:x,z1:z,z2:z,cx:x,cz:z,top:0};draw();onPick&&onPick({id:'',name:nm,x,z,top:0,free:true});}
   function choose(b,fly){sel=b;if(fly){s=Math.min(fit*14,Math.max(s,fit*3.5));ox=b.cx;oz=b.cz;clamp();}draw();onPick&&onPick({id:b.id,name:b.name,x:Math.round(b.cx*10)/10,z:Math.round(b.cz*10)/10,top:b.top});}
   const P=new Map();let moved=0,pd=0;
   const clamp=()=>{ox=Math.max(B.x1,Math.min(B.x2,ox));oz=Math.max(B.z1,Math.min(B.z2,oz));s=Math.max(fit*.9,Math.min(fit*16,s));};
@@ -40,7 +41,7 @@ export function cityPicker(host,{map,onPick,onMiss}={}){
     if(P.size===1){ox-=(nx-p.x)/s;oz-=(ny-p.y)/s;moved+=Math.abs(nx-p.x)+Math.abs(ny-p.y);}
     else if(P.size===2){p.x=nx;p.y=ny;const[a,b]=[...P.values()],d=Math.hypot(a.x-b.x,a.y-b.y);if(pd)s*=d/pd;pd=d;moved+=20;}
     p.x=nx;p.y=ny;clamp();draw();};
-  cv.onpointerup=cv.onpointercancel=e=>{const p=P.get(e.pointerId);P.delete(e.pointerId);pd=0;if(p&&moved<8&&P.size===0){const b=pickAt(e.offsetX,e.offsetY);if(b)choose(b,false);else onMiss&&onMiss();}};
+  cv.onpointerup=cv.onpointercancel=e=>{const p=P.get(e.pointerId);P.delete(e.pointerId);pd=0;if(p&&moved<8&&P.size===0){const b=pickAt(e.offsetX,e.offsetY);if(b)choose(b,false);else chooseFree(wx(e.offsetX),wz(e.offsetY));}};
   cv.onwheel=e=>{e.preventDefault();const bx=wx(e.offsetX),bz=wz(e.offsetY);s*=e.deltaY<0?1.2:1/1.2;clamp();ox+=bx-wx(e.offsetX);oz+=bz-wz(e.offsetY);clamp();draw();};
   new ResizeObserver(size).observe(cv);requestAnimationFrame(size);
   const zb=el('div','cu-zoom');[['+',1.4],['−',1/1.4]].forEach(([t,f])=>{const b=el('button','',t);b.type='button';b.onclick=()=>{s*=f;clamp();draw();};zb.append(b);});host.append(zb);
@@ -83,6 +84,7 @@ export const thumbOf=u=>String(u).replace('/upload/','/upload/c_fill,w_200,h_200
 export const cleanIg=v=>{v=String(v||'').trim().replace(/^@+/,'');return /^[A-Za-z0-9._]{1,30}$/.test(v)?v:'';};
 
 /* ---------- form lengkap ---------- */
+const HINT='Ketuk bangunan (garis putus-putus) untuk menaruh di atasnya, atau ketuk tempat lain (jalan, taman, mana saja) untuk menaruh bebas di titik itu.';
 export function buildUploadForm({cloud,getMap,precision=3,submitLabel='Kirim foto',onSubmit}){
   const root=el('div','cu'),lab=t=>el('label','cu-lab',t);let bld=null,real=null,realCtl=null,file=null,picker=null;const rd=v=>Math.round(v*10**precision)/10**precision;
   const ig=el('input','cu-in');ig.placeholder='@username IG (opsional)';ig.maxLength=31;ig.autocapitalize='none';ig.autocomplete='off';
@@ -90,8 +92,8 @@ export function buildUploadForm({cloud,getMap,precision=3,submitLabel='Kirim fot
   ph.onchange=()=>{file=ph.files[0]||null;prev.hidden=!file;if(file)prev.src=URL.createObjectURL(file);};
   const cityHost=el('div','cu-host'),areaTxt=el('p','cu-hint','Memuat peta kota…'),pickSel=el('select','cu-in');pickSel.hidden=true;
   Promise.resolve().then(()=>getMap()).then(map=>{
-    picker=cityPicker(cityHost,{map,onPick:b=>{bld=b;areaTxt.textContent='📍 '+b.name+' · foto tampil di atas bangunan ini';pickSel.value=b.id;},onMiss:()=>{areaTxt.textContent='Ketuk salah satu bangunan (garis putus-putus) atau pilih dari daftar.';}});
-    areaTxt.textContent=map.fallback?'Gambar peta belum tersedia, memakai peta sederhana. Ketuk bangunan atau pilih dari daftar.':'Ketuk bangunan di peta untuk memilih lokasinya.';
+    picker=cityPicker(cityHost,{map,onPick:b=>{bld=b;areaTxt.textContent=b.free?'📍 Titik bebas · '+b.name:'📍 '+b.name+' · foto tampil di atas bangunan ini';pickSel.value=b.id||'';}});
+    areaTxt.textContent=map.fallback?'Gambar peta belum tersedia, memakai peta sederhana. Ketuk di mana saja untuk menaruh titik.':HINT;
     pickSel.add(new Option('— atau pilih bangunan dari daftar —',''));[...picker.boxes].sort((a,b)=>a.name.localeCompare(b.name)).forEach(b=>pickSel.add(new Option(b.name,b.id)));pickSel.hidden=false;
     pickSel.onchange=()=>{if(pickSel.value)picker.select(pickSel.value);};
   }).catch(e=>{areaTxt.textContent='Peta gagal dimuat: '+e.message;});
@@ -108,10 +110,10 @@ export function buildUploadForm({cloud,getMap,precision=3,submitLabel='Kirim fot
   const st=el('p','cu-hint'),sub=el('button','cu-btn ac',submitLabel);sub.type='button';
   sub.onclick=async()=>{
     const handle=cleanIg(ig.value);if(ig.value.trim()&&!handle){st.textContent='Username IG tidak valid (huruf, angka, titik, garis bawah).';return;}
-    if(!file){st.textContent='Pilih foto dulu.';return;}if(!bld){st.textContent='Pilih bangunan di peta FucktheRules dulu.';return;}
+    if(!file){st.textContent='Pilih foto dulu.';return;}if(!bld){st.textContent='Ketuk peta FucktheRules dulu (bangunan atau titik bebas).';return;}
     sub.disabled=true;try{st.textContent='Mengecilkan foto…';const blob=await compress(file);st.textContent='Mengunggah…';const url=await uploadCloudinary(blob,cloud);
       st.textContent='Menyimpan…';await onSubmit({url,thumb:thumbOf(url),ig:handle,caption:cap.value.trim().slice(0,200),place:bld.id,cityArea:bld.name,cityX:bld.x,cityZ:bld.z,cityY:bld.top,lat:real?real.lat:null,lng:real?real.lng:null,placeName:place.value.trim().slice(0,120)});
-      st.textContent='Terkirim ✓';ph.value='';file=null;prev.hidden=true;cap.value='';ig.value='';bld=null;picker&&picker.clear();pickSel.value='';areaTxt.textContent='Ketuk bangunan di peta untuk memilih lokasinya.';
+      st.textContent='Terkirim ✓';ph.value='';file=null;prev.hidden=true;cap.value='';ig.value='';bld=null;picker&&picker.clear();pickSel.value='';areaTxt.textContent=HINT;
     }catch(e){console.error(e);st.textContent='Gagal: '+(e.message||e.code||'coba lagi');}sub.disabled=false;};
-  root.append(lab('Username IG'),ig,lab('Foto'),ph,prev,lab('1 · Pilih bangunan di peta FucktheRules'),cityHost,areaTxt,pickSel,lab('2 · Lokasi asli (opsional)'),row,realHost,place,coord,lab('Caption'),cap,sub,st);
+  root.append(lab('Username IG'),ig,lab('Foto'),ph,prev,lab('1 · Taruh di peta FucktheRules'),cityHost,areaTxt,pickSel,lab('2 · Lokasi asli (opsional)'),row,realHost,place,coord,lab('Caption'),cap,sub,st);
   return root;}
