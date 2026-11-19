@@ -9,11 +9,21 @@ export const MAP={b:{x1:-148,x2:284,z1:-262,z2:62},
   boxes:[{id:'stadium-ot',name:'OLD TRAFFORD',x:-48,z:-47.5,w:42,d:37},{id:'stadium',name:'GELORA BUNG KARNO (GBK)',x:181,z:-42,w:42,d:37},{id:'stadium-maguwo',name:'STADION MAGUWO',x:181,z:23.5,w:42,d:37},{id:'station',name:'STASIUN',x:8,z:-7,w:10,d:8}]};
 function fallbackMap(){const f=v=>Math.round(v*10)/10;return {bounds:MAP.b,w:0,h:0,img:null,fallback:true,boxes:MAP.boxes.map(b=>({id:b.id,name:b.name,x1:f(b.x-b.w/2),x2:f(b.x+b.w/2),z1:f(b.z-b.d/2),z2:f(b.z+b.d/2),top:6}))};}
 const loadImg=u=>new Promise((ok,no)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>ok(i);i.onerror=()=>no(new Error('gambar peta gagal dimuat'));i.src=u;});
-/* base: alamat tempat city-map.json/.jpg berada ('' = folder yang sama). live: fungsi yang merender peta dari kota yang sedang berjalan. */
-export async function loadCityMap({base='',live=null}={}){
+/* base: alamat tempat city-map.json/.jpg berada ('' = folder yang sama). live: fungsi yang merender peta dari kota yang sedang berjalan.
+   frame: alamat kota; dipakai admin: kota dibuka tersembunyi (?mapmsg=1) lalu mengirim gambar peta + hitbox lewat postMessage. */
+export async function loadCityMap({base='',live=null,frame=null}={}){
   try{const r=await fetch(base+'city-map.json',{cache:'no-cache'});if(!r.ok)throw 0;const j=await r.json();const img=await loadImg(base+'city-map.jpg');return {...j,img};}catch{}
   if(live){try{return live();}catch(e){console.warn('peta live gagal',e);}}
+  if(frame){try{return await frameMap(frame);}catch(e){console.warn('peta via kota gagal',e);}}
   return fallbackMap();}
+let _fm=null;
+function frameMap(site,timeout=60000){
+  if(_fm)return _fm;
+  _fm=new Promise((ok,no)=>{const u=new URL(site),f=document.createElement('iframe');f.style.cssText='position:fixed;left:-9999px;top:0;width:1100px;height:760px;border:0;visibility:hidden';f.setAttribute('aria-hidden','true');f.tabIndex=-1;
+    let t=0;const done=(fn,v)=>{clearTimeout(t);window.removeEventListener('message',on);f.remove();fn(v);};
+    const on=async e=>{if(e.origin!==u.origin||!e.data||e.data.ftr!=='citymap')return;try{const img=await loadImg(e.data.image);done(ok,{...e.data.map,img});}catch(er){done(no,er);}};
+    t=setTimeout(()=>done(no,new Error('waktu habis')),timeout);window.addEventListener('message',on);f.src=u.origin+'/?mapmsg=1';document.body.append(f);});
+  _fm.catch(()=>{_fm=null;});return _fm;}
 
 export function cityPicker(host,{map,onPick}={}){
   const cv=el('canvas','cu-map'),ctx=cv.getContext('2d'),B=map.bounds,boxes=map.boxes.map(b=>({...b,cx:(b.x1+b.x2)/2,cz:(b.z1+b.z2)/2,area:(b.x2-b.x1)*(b.z2-b.z1)}));
@@ -90,7 +100,7 @@ export function buildUploadForm({cloud,getMap,precision=3,submitLabel='Kirim fot
   const ig=el('input','cu-in');ig.placeholder='@username IG (opsional)';ig.maxLength=31;ig.autocapitalize='none';ig.autocomplete='off';
   const ph=el('input','cu-in');ph.type='file';ph.accept='image/*';const prev=el('img','cu-prev');prev.hidden=true;
   ph.onchange=()=>{file=ph.files[0]||null;prev.hidden=!file;if(file)prev.src=URL.createObjectURL(file);};
-  const cityHost=el('div','cu-host'),areaTxt=el('p','cu-hint','Memuat peta kota…'),pickSel=el('select','cu-in');pickSel.hidden=true;
+  const cityHost=el('div','cu-host'),areaTxt=el('p','cu-hint','Memuat peta kota… (pertama kali bisa 10–30 detik)'),pickSel=el('select','cu-in');pickSel.hidden=true;
   Promise.resolve().then(()=>getMap()).then(map=>{
     picker=cityPicker(cityHost,{map,onPick:b=>{bld=b;areaTxt.textContent=b.free?'📍 Titik bebas · '+b.name:'📍 '+b.name+' · foto tampil di atas bangunan ini';pickSel.value=b.id||'';}});
     areaTxt.textContent=map.fallback?'Gambar peta belum tersedia, memakai peta sederhana. Ketuk di mana saja untuk menaruh titik.':HINT;

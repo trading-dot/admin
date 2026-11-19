@@ -68,13 +68,24 @@ async function load() {
 const draw = () => window.__kotaTab === "galeri" ? drawGaleri() : window.__kotaTab === "sorotan" ? drawSorotan() : drawProgres();
 
 /* ---------- artikel = pengelompokan order PO berbayar menurut nama produk ---------- */
+const stripP = n => String(n || "").replace(/^\s*(\([^)]*\)\s*)+/, "").trim();
+const toks = n => new Set(slug(n).split("-").filter(w => w.length > 1));
+/* cocokkan nama artikel di order dengan produk: persis -> tanpa awalan "(Pre Order)" -> kemiripan kata */
+function findProduk(name) {
+  const ps = Object.values(produk), k1 = slug(name), k2 = slug(stripP(name));
+  let f = ps.find(p => slug(p.name) === k1); if (f) return f;
+  f = ps.find(p => slug(p.name) === k2 || slug(stripP(p.name)) === k2 || slug(stripP(p.name)) === k1); if (f) return f;
+  const t = toks(stripP(name)); let best = null, bs = 0;
+  ps.forEach(p => { const pt = toks(stripP(p.name)); let i = 0; t.forEach(w => { if (pt.has(w)) i++; }); const sc = i / Math.max(t.size, pt.size, 1); if (sc > bs) { bs = sc; best = p; } });
+  return bs >= .6 ? best : null;
+}
 function articles() {
   const m = {};
   orders.filter(o => paid(o) && o.isPO).forEach(o => itemsOf(o).forEach(i => { const k = slug(i.nama); if (!k) return; const a = m[k] = m[k] || { key: k, name: i.nama, orders: new Set(), color: hexOf(i.warna) }; a.orders.add(o.id); }));
   Object.keys(feed).forEach(k => { m[k] = m[k] || { key: k, name: feed[k].name, orders: new Set(), color: feed[k].color }; });
   if (F.all) Object.keys(produk).forEach(k => { m[k] = m[k] || { key: k, name: produk[k].name, orders: new Set(), color: produk[k].color }; });
   const q = F.q.toLowerCase();
-  return Object.values(m).map(a => ({ ...a, image: (produk[a.key] && produk[a.key].image) || (feed[a.key] && feed[a.key].image) || "", feed: feed[a.key] || null }))
+  return Object.values(m).map(a => { const pr = findProduk(a.name); return { ...a, color: (pr && pr.color) || a.color, image: (pr && pr.image) || (feed[a.key] && feed[a.key].image) || "", feed: feed[a.key] || null }; })
     .filter(a => !q || a.name.toLowerCase().includes(q)).sort((a, b) => b.orders.size - a.orders.size || a.name.localeCompare(b.name));
 }
 
@@ -165,8 +176,8 @@ function drawGaleri() {
   const h = el("div"); h.append(el("h2", "", "Galeri kota"), el("p", "k-muted", "Foto pengunjung menunggu persetujuan. Foto yang disetujui tampil di atas bangunan yang dipilih."));
   const b1 = el("div", "k-box"); b1.append(el("h2", "", "Antrean (" + pend.length + ")"));
   if (!pend.length) b1.append(el("p", "k-muted", "Tidak ada foto menunggu.")); else { const g = el("div", "k-gal"); pend.forEach(x => g.append(photoCard(x, true))); b1.append(g); }
-  const b2 = el("div", "k-box"); b2.append(el("h2", "", "Upload manual"), el("p", "k-muted", "Untuk foto dari IG atau dokumentasi. Langsung tampil tanpa antrean. Gambar peta diambil dari " + CITY_SITE + "city-map.jpg."));
-  b2.append(buildUploadForm({ cloud: CLOUD, precision: 5, submitLabel: "Upload dan tampilkan", getMap: () => loadCityMap({ base: CITY_SITE }), onSubmit: async d => {
+  const b2 = el("div", "k-box"); b2.append(el("h2", "", "Upload manual"), el("p", "k-muted", "Untuk foto dari IG atau dokumentasi. Langsung tampil tanpa antrean. Gambar peta kota dibuat otomatis dari kota (pertama kali 10–30 detik)."));
+  b2.append(buildUploadForm({ cloud: CLOUD, precision: 5, submitLabel: "Upload dan tampilkan", getMap: () => loadCityMap({ base: CITY_SITE, frame: CITY_SITE }), onSubmit: async d => {
     const row = { ...d, status: "approved", device: "admin", createdAt: serverTimestamp() }; const r = await addDoc(collection(cityDb, "cityGallery"), row);
     gallery.push({ id: r.id, ...row, createdAt: null }); toast("Foto ditambahkan ke kota"); setTimeout(draw, 1200); } }));
   const b3 = el("div", "k-box"); b3.append(el("h2", "", "Tampil di kota (" + ok.length + ")"));
