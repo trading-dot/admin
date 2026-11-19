@@ -48,9 +48,10 @@ window.__kotaTab = "progres";
 async function load() {
   app.innerHTML = '<p class="k-muted">Mengambil data…</p>';
   try {
-    const [os, ps, fs, cs, gs, sp] = await Promise.all([
+    const [os, ps, as, fs, cs, gs, sp] = await Promise.all([
       getDocs(query(collection(storeDb, "orders"), orderBy("createdAt", "desc"))),
       getDocs(collection(storeDb, "produk")).catch(() => null),
+      getDocs(collection(storeDb, "aksesoris")).catch(() => null),
       getDocs(collection(cityDb, "cityArticles")),
       getDoc(doc(cityDb, "cityConfig", "steps")).catch(() => null),
       getDocs(collection(cityDb, "cityGallery")).catch(() => null),
@@ -58,7 +59,9 @@ async function load() {
     ]);
     spot = sp && sp.exists() ? sp.data() : null; spotSel = spot ? spot.key : null;
     orders = os.docs.map(d => ({ id: d.id, ...d.data() })).filter(o => o.kodePelunasan);
-    produk = {}; if (ps) ps.docs.forEach(d => { const p = d.data(), n = p.nama || p.name; if (n) produk[slug(n)] = { name: String(n), image: absUrl(p.thumbnail), color: hexOf((p.warna || "").split("/")[0]), po: !!p.status && /po|pre/i.test(String(p.status)) }; });
+    produk = {};
+    const addProd = (d, acc) => { const p = d.data(), n = p.nama || p.name; if (!n) return; produk[slug(n)] = { name: String(n), image: absUrl(p.thumbnail), color: hexOf(String(p.warna || "").split("/")[0]), badge: p.badge || "", poOpen: p.badge === "pre" && !p.poClosed, acc: !!acc }; };
+    if (ps) ps.docs.forEach(d => addProd(d, false)); if (as) as.docs.forEach(d => addProd(d, true));
     feed = {}; fs.docs.forEach(d => feed[d.id] = d.data());
     if (cs && cs.exists()) (cs.data().steps || []).forEach(x => { const s = stepOf(x.id); if (s && x.text) s.text = String(x.text).slice(0, 200); });
     gallery = gs ? gs.docs.map(d => ({ id: d.id, ...d.data() })) : [];
@@ -83,6 +86,7 @@ function articles() {
   const m = {};
   orders.filter(o => paid(o) && o.isPO).forEach(o => itemsOf(o).forEach(i => { const k = slug(i.nama); if (!k) return; const a = m[k] = m[k] || { key: k, name: i.nama, orders: new Set(), color: hexOf(i.warna) }; a.orders.add(o.id); }));
   Object.keys(feed).forEach(k => { m[k] = m[k] || { key: k, name: feed[k].name, orders: new Set(), color: feed[k].color }; });
+  Object.keys(produk).forEach(k => { if (produk[k].poOpen) m[k] = m[k] || { key: k, name: produk[k].name, orders: new Set(), color: produk[k].color }; });
   if (F.all) Object.keys(produk).forEach(k => { m[k] = m[k] || { key: k, name: produk[k].name, orders: new Set(), color: produk[k].color }; });
   const q = F.q.toLowerCase();
   return Object.values(m).map(a => { const pr = findProduk(a.name); return { ...a, color: (pr && pr.color) || a.color, image: (pr && pr.image) || (feed[a.key] && feed[a.key].image) || "", feed: feed[a.key] || null }; })
@@ -95,7 +99,7 @@ function drawProgres() {
   const head = el("div"); head.append(el("h2", "", "Progres artikel"), el("p", "k-muted", "Pilih artikel, pilih langkah, kirim. Gambar artikel pindah bangunan di kota, dan timeline semua order PO artikel itu ikut berubah. Kota tidak menampilkan data order atau resi."));
   const filt = el("div", "k-box k-bar");
   const q = el("input", "k-in"); q.placeholder = "Cari artikel"; q.value = F.q; q.oninput = () => { F.q = q.value; list(); };
-  const al = el("label", "k-muted"); const cb = el("input"); cb.type = "checkbox"; cb.checked = F.all; cb.onchange = () => { F.all = cb.checked; list(); }; al.append(cb, " Tampilkan semua produk");
+  const al = el("label", "k-muted"); const cb = el("input"); cb.type = "checkbox"; cb.checked = F.all; cb.onchange = () => { F.all = cb.checked; list(); }; al.append(cb, " Tampilkan semua produk dan aksesoris");
   const all = el("button", "k-btn", "Pilih semua"); all.onclick = () => { articles().forEach(a => sel.add(a.key)); list(); };
   const none = el("button", "k-btn", "Kosongkan"); none.onclick = () => { sel.clear(); list(); };
   filt.append(q, al, all, none);
@@ -104,13 +108,13 @@ function drawProgres() {
 }
 function list() {
   const box = $("#kList"); if (!box) return; box.innerHTML = ""; const rows = articles();
-  if (!rows.length) box.append(el("p", "k-muted", "Belum ada artikel. Centang \"Tampilkan semua produk\" untuk menambah artikel baru ke kota."));
+  if (!rows.length) box.append(el("p", "k-muted", "Belum ada artikel. Centang \"Tampilkan semua produk dan aksesoris\" untuk menambah artikel baru ke kota."));
   rows.forEach(a => {
     const r = el("div", "k-art"), cb = el("input"); cb.type = "checkbox"; cb.checked = sel.has(a.key); cb.onchange = () => { cb.checked ? sel.add(a.key) : sel.delete(a.key); bar(); };
     let pic; if (a.image) { pic = new Image(); pic.src = a.image; pic.loading = "lazy"; pic.alt = ""; pic.referrerPolicy = "no-referrer"; } else pic = el("div", "k-ph", "tanpa gambar");
     const info = el("div"), t = el("b", "", a.name), s = a.feed ? stepOf(a.feed.step) : null;
     t.append(el("span", "k-chip" + (a.feed ? (a.feed.hidden ? " off" : "") : " bad"), a.feed ? (a.feed.hidden ? "disembunyikan" : (s ? s.label : a.feed.step)) : "belum di kota"));
-    info.append(t, el("small", "", a.orders.size + " order PO berbayar" + (a.feed && a.feed.note ? " · " + a.feed.note : "")));
+    const pr = findProduk(a.name); info.append(t, el("small", "", a.orders.size + " order PO berbayar" + (pr && pr.poOpen ? " · PO masih dibuka" : "") + (pr && pr.acc ? " · aksesoris" : "") + (a.feed && a.feed.note ? " · " + a.feed.note : "")));
     r.append(cb, pic, info);
     if (a.feed) { const bt = el("div", "k-bar"), hb = el("button", "k-btn", a.feed.hidden ? "Tampilkan" : "Sembunyikan"); hb.onclick = () => toggleHide(a); const db = el("button", "k-btn", "Hapus dari kota"); db.onclick = () => delArt(a); bt.append(hb, db); r.append(bt); }
     box.append(r);
@@ -212,7 +216,7 @@ function drawSorotan() {
   const paintGrid = () => { const s = q.value.toLowerCase(); grid.innerHTML = "";
     items.filter(i => !s || i.name.toLowerCase().includes(s)).forEach(i => { const o = el("button", "sp-opt" + (i.key === spotSel ? " on" : ""));
       if (i.image) { const im = new Image(); im.src = i.image; im.alt = ""; im.loading = "lazy"; im.referrerPolicy = "no-referrer"; o.append(im); } else o.append(el("span", "sp-no", "tanpa foto"));
-      o.append(el("b", "", i.name)); o.onclick = () => { spotSel = i.key; if (!label || LABELS.includes(label)) { label = i.po ? "PRE ORDER" : "READY STOCK"; custom.value = ""; paintChips(); } paintGrid(); paintPrev(); }; grid.append(o); });
+      o.append(el("b", "", i.name)); if (i.acc) o.append(el("small", "k-muted", "Aksesoris")); o.onclick = () => { spotSel = i.key; if (!label || LABELS.includes(label)) { label = i.badge === "pre" ? "PRE ORDER" : i.badge === "sold" ? "SOLD OUT" : "READY STOCK"; custom.value = ""; paintChips(); } paintGrid(); paintPrev(); }; grid.append(o); });
     if (!items.length) grid.append(el("p", "k-muted", "Produk dari web utama belum terbaca. Muat ulang halaman ini.")); };
   q.oninput = paintGrid; paintChips(); paintGrid(); paintPrev(); lab.append(chips);
   const act = el("div", "k-box k-bar");
