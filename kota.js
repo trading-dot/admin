@@ -30,7 +30,7 @@ const absUrl = u => { if (!u) return ""; if (/^https?:/i.test(u)) return u; try 
 const itemsOf = o => Array.isArray(o.produk) ? o.produk.map(p => ({ nama: p.nama || "", warna: p.warna || "" })) : [{ nama: o.produk || "", warna: o.warna || "" }];
 const paid = o => ["dp", "lunas"].includes(o.status || "pending");
 
-let storeDb, cityDb, orders = [], produk = {}, feed = {}, gallery = [], loaded = false, sel = new Set();
+let storeDb, cityDb, orders = [], produk = {}, feed = {}, gallery = [], spot = null, spotSel = null, loaded = false, sel = new Set();
 const F = { q: "", all: false };
 
 if (!cityReady()) {
@@ -48,13 +48,15 @@ window.__kotaTab = "progres";
 async function load() {
   app.innerHTML = '<p class="k-muted">Mengambil data…</p>';
   try {
-    const [os, ps, fs, cs, gs] = await Promise.all([
+    const [os, ps, fs, cs, gs, sp] = await Promise.all([
       getDocs(query(collection(storeDb, "orders"), orderBy("createdAt", "desc"))),
       getDocs(collection(storeDb, "produk")).catch(() => null),
       getDocs(collection(cityDb, "cityArticles")),
       getDoc(doc(cityDb, "cityConfig", "steps")).catch(() => null),
-      getDocs(collection(cityDb, "cityGallery")).catch(() => null)
+      getDocs(collection(cityDb, "cityGallery")).catch(() => null),
+      getDoc(doc(cityDb, "cityConfig", "spotlight")).catch(() => null)
     ]);
+    spot = sp && sp.exists() ? sp.data() : null; spotSel = spot ? spot.key : null;
     orders = os.docs.map(d => ({ id: d.id, ...d.data() })).filter(o => o.kodePelunasan);
     produk = {}; if (ps) ps.docs.forEach(d => { const p = d.data(), n = p.nama || p.name; if (n) produk[slug(n)] = { name: String(n), image: absUrl(p.thumbnail), color: hexOf((p.warna || "").split("/")[0]), po: !!p.status && /po|pre/i.test(String(p.status)) }; });
     feed = {}; fs.docs.forEach(d => feed[d.id] = d.data());
@@ -63,7 +65,7 @@ async function load() {
   } catch (e) { console.error(e); app.innerHTML = ""; const b = el("div", "k-box"); b.append(el("p", "k-err", "Gagal memuat: " + (e.code || e.message)), el("p", "k-muted", "Cek aturan Firestore di project kota dan login admin.")); app.append(b); return; }
   loaded = true; draw();
 }
-const draw = () => window.__kotaTab === "galeri" ? drawGaleri() : drawProgres();
+const draw = () => window.__kotaTab === "galeri" ? drawGaleri() : window.__kotaTab === "sorotan" ? drawSorotan() : drawProgres();
 
 /* ---------- artikel = pengelompokan order PO berbayar menurut nama produk ---------- */
 function articles() {
@@ -170,4 +172,46 @@ function drawGaleri() {
   const b3 = el("div", "k-box"); b3.append(el("h2", "", "Tampil di kota (" + ok.length + ")"));
   if (!ok.length) b3.append(el("p", "k-muted", "Belum ada.")); else { const g = el("div", "k-gal"); ok.slice(0, 120).forEach(x => g.append(photoCard(x, false))); b3.append(g); }
   app.append(h, b1, b2, b3);
+}
+
+/* ---------- tab Sorotan: satu artikel pilihan yang melayang di atas Toko FucktheRules City ---------- */
+const LABELS = ["PRE ORDER", "READY STOCK", "NEW DROP", "SEGERA HADIR", "SOLD OUT"];
+function labelBg(t) { t = String(t).toUpperCase(); return /READY/.test(t) ? "#5be39a" : /SOLD|HABIS/.test(t) ? "#e7e5ea" : /PRE/.test(t) ? "#ffd51e" : "#e6b3ef"; }
+function previewCard(name, image, label) {
+  const c = el("div", "sp-prev"), t = el("div", "sp-lab", String(label || "").toUpperCase() || "KETERANGAN"); t.style.background = labelBg(label || "");
+  const ph = el("div", "sp-ph"); if (image) { const im = new Image(); im.src = image; im.alt = ""; im.referrerPolicy = "no-referrer"; ph.append(im); } else ph.textContent = "foto";
+  c.append(t, ph, el("div", "sp-name", name || "Pilih artikel")); return c;
+}
+function drawSorotan() {
+  app.innerHTML = "";
+  const items = Object.entries(produk).map(([key, p]) => ({ key, ...p })).sort((a, b) => a.name.localeCompare(b.name));
+  const head = el("div"); head.append(el("h2", "", "Sorotan toko"), el("p", "k-muted", "Satu artikel pilihan yang melayang di atas Toko FucktheRules City: keterangan di atas, foto dari thumbnail web utama, nama artikel di bawah."));
+  const now = el("div", "k-box"); now.append(el("b", "", spot ? "Sekarang: " + spot.name + " · " + spot.label + (spot.hidden ? " (disembunyikan)" : "") : "Belum ada sorotan di kota."));
+  const pick = el("div", "k-box"); pick.append(el("h2", "", "1 · Pilih artikel"));
+  const q = el("input", "k-in"); q.placeholder = "Cari artikel"; pick.append(q);
+  const grid = el("div", "sp-grid"); pick.append(grid);
+  const lab = el("div", "k-box"); lab.append(el("h2", "", "2 · Keterangan"));
+  const chips = el("div", "k-bar"), custom = el("input", "k-in"); custom.placeholder = "atau tulis sendiri (maks 20 huruf)"; custom.maxLength = 20; custom.value = spot && !LABELS.includes(spot.label) ? spot.label : "";
+  let label = spot ? spot.label : "";
+  const pv = el("div", "k-box"); pv.append(el("h2", "", "3 · Pratinjau")); const pvBox = el("div"); pv.append(pvBox);
+  const cur = () => items.find(i => i.key === spotSel);
+  const paintPrev = () => { const a = cur(); pvBox.innerHTML = ""; pvBox.append(previewCard(a ? a.name : (spot ? spot.name : ""), a ? a.image : (spot ? spot.image : ""), label)); };
+  const paintChips = () => { chips.innerHTML = ""; LABELS.forEach(l => { const b = el("button", "k-btn" + (label === l ? " ac" : ""), l); b.onclick = () => { label = l; custom.value = ""; paintChips(); paintPrev(); }; chips.append(b); }); chips.append(custom); };
+  custom.oninput = () => { label = custom.value.trim().toUpperCase(); paintChips.skip = 1; chips.querySelectorAll(".k-btn").forEach(b => b.classList.remove("ac")); paintPrev(); };
+  const paintGrid = () => { const s = q.value.toLowerCase(); grid.innerHTML = "";
+    items.filter(i => !s || i.name.toLowerCase().includes(s)).forEach(i => { const o = el("button", "sp-opt" + (i.key === spotSel ? " on" : ""));
+      if (i.image) { const im = new Image(); im.src = i.image; im.alt = ""; im.loading = "lazy"; im.referrerPolicy = "no-referrer"; o.append(im); } else o.append(el("span", "sp-no", "tanpa foto"));
+      o.append(el("b", "", i.name)); o.onclick = () => { spotSel = i.key; if (!label || LABELS.includes(label)) { label = i.po ? "PRE ORDER" : "READY STOCK"; custom.value = ""; paintChips(); } paintGrid(); paintPrev(); }; grid.append(o); });
+    if (!items.length) grid.append(el("p", "k-muted", "Produk dari web utama belum terbaca. Muat ulang halaman ini.")); };
+  q.oninput = paintGrid; paintChips(); paintGrid(); paintPrev(); lab.append(chips);
+  const act = el("div", "k-box k-bar");
+  const save = el("button", "k-btn ac", "Tampilkan di kota");
+  save.onclick = async () => { const a = cur(); if (!a) return toast("Pilih artikel dulu"); if (!label) return toast("Isi keterangan dulu");
+    try { const d = { key: a.key, name: a.name, image: a.image || "", label, hidden: false, updatedAt: serverTimestamp() }; await setDoc(doc(cityDb, "cityConfig", "spotlight"), d); spot = { ...d, updatedAt: null }; toast("Sorotan tampil di atas toko"); draw(); } catch (e) { toast("Gagal: " + (e.code || e.message)); } };
+  const hide = el("button", "k-btn", spot && spot.hidden ? "Tampilkan lagi" : "Sembunyikan"); hide.disabled = !spot;
+  hide.onclick = async () => { try { await setDoc(doc(cityDb, "cityConfig", "spotlight"), { hidden: !spot.hidden }, { merge: true }); spot.hidden = !spot.hidden; toast(spot.hidden ? "Disembunyikan" : "Ditampilkan"); draw(); } catch (e) { toast("Gagal: " + (e.code || e.message)); } };
+  const del = el("button", "k-btn", "Hapus sorotan"); del.disabled = !spot;
+  del.onclick = async () => { if (!confirm("Hapus sorotan dari kota?")) return; try { await deleteDoc(doc(cityDb, "cityConfig", "spotlight")); spot = null; spotSel = null; toast("Sorotan dihapus"); draw(); } catch (e) { toast("Gagal: " + (e.code || e.message)); } };
+  act.append(save, hide, del);
+  app.append(head, now, pick, lab, pv, act);
 }
