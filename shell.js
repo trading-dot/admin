@@ -2,6 +2,8 @@ import { onSession, loginEmail, loginGoogle, logoutAll, email } from "./auth.js"
 
 // ====== Struktur menu: kategori -> sub tab (label sama persis dengan panel aslinya) ======
 const NAV = [
+  { id: "insight", label: "Insight", icon: "fa-chart-line", src: "insight.html", tabs: [
+      [ "utama", "Utama" ], [ "ringkasan", "Ringkasan" ], [ "pengunjung", "Pengunjung" ], [ "ai", "AI" ] ] },
   { id: "web", label: "Web Utama", icon: "fa-store", src: "web.html", tabs: [
       { g: "Transaksi" }, ["order", "Order"], ["rekap", "Rekap Pesanan"], ["kirim", "Pengiriman"], ["lacak", "Artikel PO"],
       { g: "Toko" }, ["produk", "Produk"], ["aksesoris", "Aksesoris"], ["tata", "Tata Letak"], ["stok", "Stok"], ["voucher", "Voucher"],

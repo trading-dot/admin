@@ -22,6 +22,10 @@
       go: function (t) { var b = document.querySelector('[data-tab="' + t + '"]'); if (b) b.click(); },
       ok: function (t) { var b = document.querySelector('[data-tab="' + t + '"]'); return !!b && b.getAttribute('aria-selected') === 'true'; }
     },
+    insight: {
+      go: function (t) { if (window.insightTab) window.insightTab(t); },
+      ok: function (t) { return window.__insightTab === t; }
+    },
     kota: {
       go: function (t) { if (window.kotaTab) window.kotaTab(t); },
       ok: function (t) { return window.__kotaTab === t; }

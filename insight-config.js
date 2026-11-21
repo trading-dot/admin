@@ -1,0 +1,7 @@
+/* Konfigurasi Insight (sama dengan auth.js). Semuanya kunci web publik; keamanan ada di Rules dan login admin. */
+export const STORE = { apiKey: "AIzaSyCVL_C4opQiKC6fNG_Rw4l-519rQZICH58", authDomain: "fvcktherules-store.firebaseapp.com", projectId: "fvcktherules-store", storageBucket: "fvcktherules-store.firebasestorage.app", messagingSenderId: "382347904485", appId: "1:382347904485:web:6715a7b395d44ad07a5b0c" };
+export const JURNAL = { apiKey: "AIzaSyAsbMEwu-h28PsRO-h3tDbHqTp6Wgj44oI", authDomain: "fvck-journal.firebaseapp.com", projectId: "fvck-journal", storageBucket: "fvck-journal.firebasestorage.app", messagingSenderId: "681112457847", appId: "1:681112457847:web:3365af3274eb6d03c8ac72" };
+export const KEU = { apiKey: "AIzaSyBmm72IP9rcM1vImVr669QCVSQkmYj5m5c", authDomain: "keuangan-fvck.firebaseapp.com", projectId: "keuangan-fvck", storageBucket: "keuangan-fvck.firebasestorage.app", messagingSenderId: "49114814826", appId: "1:49114814826:web:f33f3d3acd89eb4f87ad13" };
+/* Worker AI (sama dengan config.js repo AI). Tambahkan https://admin.fucktherules.my.id ke ALLOWED_ORIGINS Worker itu. */
+export const AI_WORKER = "https://fvck-ai.gooletok.workers.dev";
+export const SITES = [{ id: "web", label: "Web Utama", color: "#111" }, { id: "game", label: "Game Toko", color: "#f26a35" }, { id: "kota", label: "Kota", color: "#5be39a" }, { id: "jurnal", label: "Jurnal", color: "#e6b3ef" }];
