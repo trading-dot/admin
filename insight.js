@@ -75,8 +75,8 @@ async function load() {
   D.jur = D.has.jur ? { arts: docs(arts), posts, users } : null; D.ai = ai; D.loaded = true; render();
 }
 async function aiCall(path, body, ms = 45000) {
-  const tk = await getAuth(sApp).currentUser.getIdToken(), ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
-  try { const r = await fetch(AI_WORKER + path, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tk }, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "HTTP " + r.status); return j; } catch (e) { if (e && e.name === "AbortError") throw new Error("waktu habis (" + Math.round(ms / 1000) + " detik)"); throw e; } finally { clearTimeout(t); }
+  const tk = await getAuth(sApp).currentUser.getIdToken(), ctl = new AbortController(), t = ms ? setTimeout(() => ctl.abort(), ms) : 0;
+  try { const r = await fetch(AI_WORKER + path, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tk }, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || "HTTP " + r.status); return j; } catch (e) { if (e && e.name === "AbortError") throw new Error("waktu habis (" + Math.round(ms / 1000) + " detik)"); throw e; } finally { if (t) clearTimeout(t); }
 }
 
 /* ---------- pengunjung ---------- */
@@ -175,52 +175,113 @@ function vRingkasan() {
   document.querySelectorAll("[data-jump]").forEach(b => b.onclick = e => { e.preventDefault(); const t0 = document.getElementById(b.dataset.jump); if (t0) t0.scrollIntoView({ behavior: "smooth", block: "start" }); });
 }
 
-/* ---------- AI ---------- */
-const AI = { chats: [], cur: null, busy: false, ro: true, check: false, hist: false, loaded: false };
-const PROMPTS = ["Ringkas order hari ini", "Order yang belum lunas", "Stok yang menipis", "Laporan keuangan bulan ini", "Ide konten IG minggu ini"];
+/* ---------- AI: Kantor mini + chat + hasil agen (terhubung dengan Kantor AI lewat Worker yang sama) ---------- */
+const AI = { chats: [], cur: null, busy: false, ro: true, check: false, loaded: false, ag: null, sel: null, work: {}, tab: "akt", feed: {}, local: [], t0: 0, timer: null, poll: null };
+const PROMPTS = ["Penjualan sepi, gimana strategimu", "Ringkas order hari ini", "Order yang belum lunas", "Stok yang menipis", "Laporan keuangan bulan ini", "Ide konten IG minggu ini"];
+const ROUTE = [[/pemasaran|marketing|promosi|iklan|strategi|sepi|campaign|kampanye|jualan|laris/i, ["PEMASARAN", "KONTEN IG"]], [/konten|\big\b|instagram|caption|postingan|reels|tiktok|upload/i, ["KONTEN IG", "CREATIVE"]], [/desain|visual|poster|kreatif|creative|gambar|foto/i, ["CREATIVE"]], [/stok|kirim|pengiriman|resi|ekspedisi|gudang|logistik|paket/i, ["LOGISTIK"]], [/keuangan|uang|kas|laba|rugi|biaya|pengeluaran|pemasukan|omzet/i, ["KEUANGAN"]], [/order|pesanan|produk|harga|katalog|pembayaran|lunas|dp\b/i, ["COMMERCE"]], [/bug|error|eror|web|situs|website|lambat|rusak|fitur/i, ["QA", "DEVELOPER"]], [/aman|keamanan|hack|spam|bahaya|phishing/i, ["SECURITY"]], [/laporan|ringkas|rangkum|evaluasi|gimana|bagaimana/i, ["ORCHESTRATOR"]]];
+function routeRoles(text) { const out = []; ROUTE.forEach(([re, rs]) => { if (re.test(text)) rs.forEach(r => { if (!out.includes(r)) out.push(r); }); }); if (!out.length || out.length > 1 && !out.includes("ORCHESTRATOR")) out.push("ORCHESTRATOR"); return out.slice(0, 4); }
 const chatsCol = () => collection(cDb, "adminChats");
 async function loadChats() { if (!cDb) return; try { const s = await getDocs(query(chatsCol(), orderBy("updatedAt", "desc"), limit(40))); AI.chats = s.docs.map(d => ({ id: d.id, ...d.data() })); } catch (e) { console.warn(e); } AI.loaded = true; }
 const saveChat = async c => { if (!cDb) return; c.updatedAt = Date.now(); try { await setDoc(doc(cDb, "adminChats", c.id), { title: c.title, msgs: c.msgs.slice(-60), createdAt: c.createdAt, updatedAt: c.updatedAt }); } catch (e) { console.warn(e); } };
+const agState = a => { const w = AI.work[a.role]; return w ? (w.done ? "done" : "work") : a.mode === "kerja" ? "work" : a.mode === "selesai" ? "done" : "santai"; };
+const emojiOf = r => ((AI.ag && AI.ag.agents.find(a => a.role === r)) || {}).emoji || "🤖";
+const when = v => { const t = Date.parse(v); return t ? new Date(t).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""; };
+function stopPoll() { if (AI.poll) { clearInterval(AI.poll); AI.poll = null; } if (AI.timer) { clearInterval(AI.timer); AI.timer = null; } }
+
 async function vAI() {
-  if (!AI.loaded) await loadChats();
-  app.innerHTML = `<div class="sec"><h2>AI</h2><span class="muted">Suruh agen AI dari sini, lihat riwayat, atau buka aplikasi AI</span></div>
-  <div class="card" id="aiSum" style="margin-bottom:12px"><h3>Ringkasan AI</h3><div id="aiSumBody" class="muted">Memuat…</div><div class="bar"><button class="btn" id="aiRef">Segarkan</button></div></div>
-  <div class="ai" id="aiBox"><div class="hist"><div class="bar" style="margin-top:0"><button class="btn ac" id="aiNew">+ Chat baru</button></div><div id="aiHist"></div></div>
-   <div class="chat"><div class="msgs" id="aiMsgs"></div><div class="compose"><div class="chips" id="aiChips"></div><textarea id="aiIn" placeholder="Tulis perintah untuk agen AI…" rows="2"></textarea>
+  stopPoll(); if (!AI.loaded) await loadChats();
+  app.innerHTML = `<div class="sec"><h2>AI</h2><span class="muted">Kantor AI versi simpel: suruh agen, lihat hasilnya, semuanya terhubung dengan Kantor AI</span></div>
+  <div class="card"><h3>Kantor</h3><p class="sub" id="agSub">Memuat agen…</p><div class="agrid" id="agGrid"></div><div id="agDetail"></div><div class="bar"><button class="btn" id="agRef">Segarkan</button></div></div>
+  <div class="ai" id="aiBox" style="margin-top:12px"><div class="hist"><div class="bar" style="margin-top:0"><button class="btn ac" id="aiNew">+ Chat baru</button></div><div id="aiHist"></div></div>
+   <div class="chat"><div class="msgs" id="aiMsgs"></div><div class="compose"><div class="chips" id="aiChips"></div><textarea id="aiIn" placeholder="Suruh agen AI… (Ctrl+Enter untuk kirim)" rows="2"></textarea>
     <div class="bar" style="margin:0"><button class="btn ink" id="aiSend">Kirim</button><label class="muted"><input type="checkbox" id="aiRo" ${AI.ro ? "checked" : ""}> Hanya baca (aman)</label><label class="muted"><input type="checkbox" id="aiCk" ${AI.check ? "checked" : ""}> Cek silang (lebih lambat)</label><button class="btn" id="aiHbtn">Riwayat</button></div>
     <div class="ext"><span class="muted">Buka di aplikasi AI:</span><button class="btn" data-x="gpt">ChatGPT</button><button class="btn" data-x="gem">Gemini</button><button class="btn" data-x="cla">Claude</button></div>
-    <p class="sub" style="margin:0">Kalau aplikasinya terpasang di HP, tautan ini membuka aplikasinya dengan teks di atas (ChatGPT dan Claude). Gemini: teks disalin, tinggal tempel.</p></div></div></div>`;
+    <p class="sub" style="margin:0">ChatGPT dan Claude membuka aplikasinya (jika terpasang) dengan teks di atas. Gemini: teks disalin, tinggal tempel.</p></div></div></div>
+  <div class="card" style="margin-top:12px"><h3>Hasil agen</h3><div class="seg" id="feedSeg"><button data-t="akt">Aktivitas</button><button data-t="draf">Draf konten</button><button data-t="lap">Laporan</button><button data-t="apr">Persetujuan</button></div><div id="feedBody" style="margin-top:10px"></div></div>`;
   const msgs = $("#aiMsgs"), inp = $("#aiIn"), cur = () => AI.chats.find(c => c.id === AI.cur);
+
+  /* --- kantor: kartu agen beranimasi --- */
+  const paintAgents = () => {
+    const g = $("#agGrid"); if (!g) return; const j = AI.ag;
+    if (!j || !j.agents) { g.innerHTML = `<p class="muted">Agen belum terbaca (Worker AI belum bisa dihubungi).</p>`; return; }
+    const b = j.anggaran_ai || {}; $("#agSub").textContent = `${j.agents.length} agen · anggaran AI hari ini ${n0(b.terpakai)}/${n0(b.batas)}`;
+    g.innerHTML = j.agents.map(a => { const s = agState(a), w = AI.work[a.role], txt = w ? (w.text || "") : a.ket || a.aktivitas || ""; return `<button class="ag ${s}${AI.sel === a.role ? " sel" : ""}" data-r="${esc(a.role)}"><span class="av">${esc(a.emoji || "🤖")}</span><b>${esc(a.role)}</b><span class="st">${s === "work" ? 'Bekerja <span class="dots"><i></i><i></i><i></i></span>' : s === "done" ? "Selesai ✓" : "Santai"}</span><small>${esc(txt).slice(0, 90)}</small></button>`; }).join("");
+    g.querySelectorAll(".ag").forEach(b => b.onclick = () => { AI.sel = AI.sel === b.dataset.r ? null : b.dataset.r; paintAgents(); paintDetail(); });
+    paintDetail();
+  };
+  const paintDetail = () => {
+    const d = $("#agDetail"); if (!d) return; const a = AI.ag && AI.ag.agents.find(x => x.role === AI.sel); if (!a) { d.innerHTML = ""; return; }
+    const r = (a.riwayat || []);
+    d.innerHTML = `<div class="agd"><h3>${esc(a.emoji || "")} ${esc(a.role)}</h3><p class="sub">${esc(a.tugas || "")}${a.jam ? " · jam kerja " + esc(a.jam) : ""}${a.berikut ? " · berikutnya " + esc(a.berikut) : ""}</p><div class="bar" style="margin-top:0"><button class="btn ac" id="agRun" ${AI.work[a.role] ? "disabled" : ""}>Suruh bekerja sekarang</button></div>${r.length ? r.map(x => `<details class="hr"><summary>${esc(x.label || "Tugas")} <span class="muted">${esc(when(x.waktu))}</span>${x.flag ? ' <span class="chip bad">perlu dicek</span>' : ""}</summary><div class="isi">${esc(x.hasil || "(tanpa isi)")}</div></details>`).join("") : '<p class="muted">Belum ada riwayat hasil.</p>'}</div>`;
+    const rb = $("#agRun"); if (rb) rb.onclick = () => runAgent(a.role);
+  };
+  async function loadAgents() { try { AI.ag = await aiCall("/agen"); D.ai = AI.ag; } catch (e) { if (!AI.ag) AI.ag = null; } paintAgents(); paintFeed(); }
+  async function runAgent(role) {
+    AI.work[role] = { text: "Mengerjakan tugasnya…" }; startPoll(); paintAgents();
+    try { const j = await aiCall("/agen/jalankan", { role }, 0); toast(j.skip ? role + ": dilewati" : j.ok === false ? role + ": gagal. " + (j.detail || "") : role + ": selesai. " + (j.label || "")); }
+    catch (e) { toast(role + ": " + e.message); }
+    AI.work[role] = { done: true }; paintAgents(); setTimeout(() => { delete AI.work[role]; paintAgents(); }, 8000); await loadAgents();
+  }
+  const startPoll = () => { if (AI.poll) clearInterval(AI.poll); AI.poll = setInterval(() => { loadAgents(); }, Object.keys(AI.work).length ? 4000 : 20000); };
+
+  /* --- hasil agen: aktivitas, draf, laporan, persetujuan --- */
+  const row = (agent, label, hasil, waktu, flag, extra) => `<details class="hr"><summary><b>${esc(emojiOf(agent))} ${esc(agent)}</b> · ${esc(label || "")} <span class="muted">${esc(when(waktu))}</span>${flag ? ' <span class="chip bad">perlu dicek</span>' : ""}${extra || ""}</summary><div class="isi">${esc(hasil || "(tanpa isi)")}</div></details>`;
+  async function paintFeed() {
+    const body = $("#feedBody"); if (!body) return; document.querySelectorAll("#feedSeg button").forEach(b => b.classList.toggle("on", b.dataset.t === AI.tab));
+    try {
+      if (AI.tab === "akt") {
+        const items = [...AI.local.map(x => ({ ...x, local: true })), ...((AI.ag && AI.ag.agents) || []).flatMap(a => (a.riwayat || []).map(x => ({ agent: a.role, ...x }))), ...((AI.ag && AI.ag.tugas) || [])].filter(x => x.label).sort((x, y) => (Date.parse(y.waktu) || 0) - (Date.parse(x.waktu) || 0)).slice(0, 30);
+        body.innerHTML = items.length ? items.map(x => row(x.agent, x.label, x.hasil, x.waktu, x.flag, x.local ? ' <span class="chip">dari chat</span>' : "")).join("") : '<p class="muted">Belum ada aktivitas. Suruh agen lewat chat di atas.</p>';
+      } else {
+        const ep = { draf: "/draf", lap: "/laporan", apr: "/persetujuan" }[AI.tab];
+        if (!AI.feed[AI.tab]) { body.innerHTML = '<p class="muted">Memuat…</p>'; AI.feed[AI.tab] = await aiCall(ep); }
+        const f = AI.feed[AI.tab];
+        if (AI.tab === "draf") body.innerHTML = (f.items || []).length ? f.items.map(x => `<details class="hr"><summary><b>📝 ${esc(x.judul || x.jenis || "Draf")}</b> <span class="muted">${esc(x.jenis || "")}${x.tema ? " · " + esc(x.tema) : ""} · ${esc(when(x.waktu))}</span>${x.diposting ? ' <span class="chip">sudah diposting</span>' : ""}</summary><div class="isi">${esc(x.isi || "")}</div><div class="bar"><button class="btn" data-copy="${esc(x.id)}">Salin teks</button></div></details>`).join("") : '<p class="muted">Belum ada draf konten.</p>';
+        if (AI.tab === "lap") body.innerHTML = ((f.laporan || []).map(x => row("ORCHESTRATOR", x.label, x.hasil, x.waktu, x.flag)).join("") || '<p class="muted">Belum ada laporan.</p>') + ((f.perhatian || []).length ? '<p class="sub" style="margin-top:10px">Perlu perhatian</p>' + f.perhatian.map(x => row(x.agent, x.label, x.hasil, x.waktu, true)).join("") : "");
+        if (AI.tab === "apr") body.innerHTML = (f.items || []).length ? f.items.map(x => `<details class="hr"><summary><b>${x.status === "pending" ? "⏳" : x.status === "setuju" || x.status === "approved" ? "✅" : "⛔"} ${esc(x.aksi || "Aksi")}</b> <span class="muted">${esc(when(x.waktu))}</span> <span class="chip ${x.status === "pending" ? "warn" : "off"}">${esc(x.status)}</span></summary><div class="isi">${esc(String(x.detail && x.detail.slice ? x.detail : JSON.stringify(x.detail || {}))) }${x.alasan ? "\n\nAlasan: " + esc(x.alasan) : ""}${x.hasil ? "\n\nHasil: " + esc(x.hasil) : ""}</div>${x.status === "pending" ? `<div class="bar"><button class="btn ac" data-ap="${esc(x.id)}" data-v="1">Setujui</button><button class="btn" data-ap="${esc(x.id)}" data-v="0">Tolak</button></div>` : ""}</details>`).join("") : '<p class="muted">Tidak ada permintaan persetujuan.</p>';
+        body.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => { const it = (f.items || []).find(z => z.id === b.dataset.copy); try { await navigator.clipboard.writeText((it && it.isi) || ""); toast("Teks disalin"); } catch { toast("Gagal menyalin"); } });
+        body.querySelectorAll("[data-ap]").forEach(b => b.onclick = async () => { b.disabled = true; try { await aiCall("/persetujuan/putuskan", { id: b.dataset.ap, keputusan: b.dataset.v === "1" ? "setuju" : "tolak" }, 0); toast("Keputusan disimpan"); delete AI.feed.apr; paintFeed(); } catch (e) { toast("Gagal: " + e.message); b.disabled = false; } });
+      }
+    } catch (e) { body.innerHTML = `<p class="muted">Belum terbaca (${esc(e.message)}).</p>`; delete AI.feed[AI.tab]; }
+  }
+  $("#feedSeg").onclick = e => { const b = e.target.closest("button"); if (!b) return; AI.tab = b.dataset.t; paintFeed(); };
+
+  /* --- chat --- */
   const paintHist = () => { const h = $("#aiHist"); h.innerHTML = ""; if (!AI.chats.length) h.append(el("p", "muted", cDb ? "Belum ada riwayat." : "Riwayat butuh login ke project kota.")); AI.chats.forEach(c => { const b = el("button", "item" + (c.id === AI.cur ? " on" : ""), c.title || "Chat"); b.append(el("small", "", new Date(c.updatedAt || 0).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }))); b.onclick = () => { AI.cur = c.id; $("#aiBox").classList.remove("showh"); paintHist(); paintMsgs(); }; h.append(b); }); };
-  const paintMsgs = () => { msgs.innerHTML = ""; const c = cur(); if (!c || !c.msgs.length) { msgs.append(el("div", "m s", "Mulai dengan menulis perintah, atau pilih saran di bawah. Mode “hanya baca” membuat AI tidak boleh mengubah data.")); } else c.msgs.forEach(m => msgs.append(el("div", "m " + (m.r === "u" ? "u" : "a"), m.t))); if (AI.busy) msgs.append(el("div", "m s", "AI sedang bekerja… (bisa sampai 1–2 menit)")); msgs.scrollTop = msgs.scrollHeight; };
+  const paintMsgs = () => { msgs.innerHTML = ""; const c = cur(); if (!c || !c.msgs.length) msgs.append(el("div", "m s", "Tulis perintah, mis. “Penjualan sepi, gimana strategimu”. Agen yang terkait ikut bekerja di atas, dan hasilnya muncul di “Hasil agen”.")); else c.msgs.forEach(m => msgs.append(el("div", "m " + (m.r === "u" ? "u" : "a"), m.t))); if (AI.busy) msgs.append(el("div", "m s", "AI sedang bekerja… " + Math.round((Date.now() - AI.t0) / 1000) + " dtk (tidak ada batas waktu)")); msgs.scrollTop = msgs.scrollHeight; };
   const chips = $("#aiChips"); PROMPTS.forEach(p => { const b = el("button", "", p); b.onclick = () => { inp.value = p; inp.focus(); }; chips.append(b); });
   async function send() {
     const text = inp.value.trim(); if (!text || AI.busy) return;
     let c = cur(); if (!c) { c = { id: "c" + Date.now().toString(36), title: text.slice(0, 40), msgs: [], createdAt: Date.now(), updatedAt: Date.now() }; AI.chats.unshift(c); AI.cur = c.id; }
-    c.msgs.push({ r: "u", t: text, ts: Date.now() }); inp.value = ""; AI.busy = true; paintHist(); paintMsgs();
+    c.msgs.push({ r: "u", t: text, ts: Date.now() }); inp.value = ""; AI.busy = true; AI.t0 = Date.now(); paintHist(); paintMsgs();
+    const roles = routeRoles(text); roles.forEach((r, i) => setTimeout(() => { if (AI.busy) { AI.work[r] = { text: "Mengerjakan: " + text.slice(0, 50) }; paintAgents(); } }, i * 900));
+    startPoll(); if (AI.timer) clearInterval(AI.timer); AI.timer = setInterval(() => { if (AI.busy) paintMsgs(); }, 1000);
     let reply;
-    try { const j = await aiCall("/chat", { readonly: AI.ro, check: AI.check, messages: c.msgs.slice(-10).map(m => ({ role: m.r === "u" ? "user" : "model", text: m.t })) }, 115000); reply = j.reply || ("Error: " + (j.error || "tanpa jawaban")); }
-    catch (e) { reply = /^waktu habis/.test(e.message) ? "AI belum menjawab dalam " + e.message.replace(/\D+/g, "") + " detik. Pertanyaan yang butuh banyak data kadang lama. Coba kirim lagi (jawaban yang sama biasanya lebih cepat), pecah jadi pertanyaan lebih pendek, atau matikan “Cek silang”." : "Tidak bisa menghubungi Worker AI: " + e.message + "\nKalau pesan ini muncul langsung (bukan setelah menunggu lama), periksa ALLOWED_ORIGINS dan status Worker."; }
-    c.msgs.push({ r: "a", t: reply, ts: Date.now() }); AI.busy = false; await saveChat(c); paintHist(); paintMsgs();
+    try { const j = await aiCall("/chat", { readonly: AI.ro, check: AI.check, messages: c.msgs.slice(-10).map(m => ({ role: m.r === "u" ? "user" : "model", text: m.t })) }, 0); reply = j.reply || ("Error: " + (j.error || "tanpa jawaban")); }
+    catch (e) { reply = "Tidak bisa menghubungi Worker AI: " + e.message + "\nPeriksa ALLOWED_ORIGINS dan status Worker."; }
+    AI.busy = false; clearInterval(AI.timer); AI.timer = null;
+    c.msgs.push({ r: "a", t: reply + "\n\n— dikerjakan: " + roles.join(", "), ts: Date.now() });
+    AI.local.unshift({ agent: roles[0], label: text.slice(0, 80), hasil: reply, waktu: new Date().toISOString() }); AI.local = AI.local.slice(0, 10);
+    roles.forEach(r => { AI.work[r] = { done: true }; setTimeout(() => { delete AI.work[r]; paintAgents(); }, 9000); });
+    paintAgents(); paintFeed(); await saveChat(c); paintHist(); paintMsgs(); loadAgents();
   }
   $("#aiSend").onclick = send; inp.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
-  $("#aiRo").onchange = e => { AI.ro = e.target.checked; };
-  $("#aiCk").onchange = e => { AI.check = e.target.checked; };
+  $("#aiRo").onchange = e => { AI.ro = e.target.checked; }; $("#aiCk").onchange = e => { AI.check = e.target.checked; };
   $("#aiNew").onclick = () => { AI.cur = null; paintHist(); paintMsgs(); inp.focus(); };
   $("#aiHbtn").onclick = () => $("#aiBox").classList.toggle("showh");
+  $("#agRef").onclick = () => { AI.feed = {}; loadAgents(); };
   document.querySelectorAll("[data-x]").forEach(b => b.onclick = async () => {
     const q = inp.value.trim() || (cur() && [...cur().msgs].reverse().find(m => m.r === "u") || {}).t || "", enc = encodeURIComponent(q);
     if (b.dataset.x === "gpt") window.open("https://chatgpt.com/" + (q ? "?q=" + enc : ""), "_blank", "noopener");
     else if (b.dataset.x === "cla") window.open("https://claude.ai/new" + (q ? "?q=" + enc : ""), "_blank", "noopener");
     else { try { if (q) await navigator.clipboard.writeText(q); toast(q ? "Teks disalin. Tempel di Gemini." : "Membuka Gemini"); } catch { } window.open("https://gemini.google.com/app", "_blank", "noopener"); }
   });
-  const sum = async () => { const b = $("#aiSumBody"); b.textContent = "Memuat…"; try { const j = await aiCall("/agen"); D.ai = j; const bd = j.anggaran_ai || {}; b.innerHTML = `<p><b>${j.agents.length}</b> agen · anggaran AI hari ini <b>${n0(bd.terpakai)}/${n0(bd.batas)}</b></p>` + table(["Agen", "Aktivitas", "Terakhir"], j.agents.map(x => [esc((x.emoji || "") + " " + x.role), esc(x.aktivitas + (x.ket ? " · " + x.ket : "")), esc(x.lastAt ? new Date(x.lastAt).toLocaleString("id-ID") : "-")])) + (j.tugas && j.tugas.length ? `<p class="sub" style="margin-top:8px">Tugas terakhir</p>` + table(["Tugas", "Hasil"], j.tugas.slice(0, 5).map(t => [esc(t.label || ""), esc(String(t.hasil || "").slice(0, 120))])) : ""); } catch (e) { b.innerHTML = `Ringkasan AI belum terbaca (${esc(e.message)}).<br>Pastikan domain admin ada di ALLOWED_ORIGINS Worker AI.`; } };
-  $("#aiRef").onclick = sum; sum(); paintHist(); paintMsgs();
+  paintHist(); paintMsgs(); paintAgents(); paintFeed(); loadAgents(); startPoll();
 }
 
 /* ---------- router ---------- */
 function render() {
-  const t = window.__insightTab || "utama";
+  const t = window.__insightTab || "utama"; if (t !== "ai") stopPoll();
   if (!D.loaded) return;
   ({ utama: vUtama, ringkasan: vRingkasan, pengunjung: vPengunjung, ai: vAI }[t] || vUtama)();
   document.querySelectorAll("[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); try { parent.location.hash = "#" + a.dataset.go; } catch { } });
