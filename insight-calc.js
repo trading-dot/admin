@@ -48,8 +48,19 @@ const PAID = ["dp", "lunas", "selesai", "dikirim"];
 export const isPaid = o => PAID.includes(String(o.status || "").toLowerCase());
 export function normOrder(o) {
   const items = Array.isArray(o.produk) ? o.produk : (o.produk ? [{ nama: o.produk }] : []);
-  return { id: o.id, kode: o.kodePelunasan || o.orderNo || o.id, orderNo: o.orderNo || "", nama: o.nama || "", t: toMs(o.createdAt), status: String(o.status || "pending").toLowerCase(), total: num(o.totalAkhir != null ? o.totalAkhir : o.total), sisa: num(o.sisaBayar != null ? o.sisaBayar : o.sisa), ongkir: num(o.ongkir), isPO: !!o.isPO, resi: o.resi || "", items: items.map(i => ({ nama: String(i.nama || i.name || ""), qty: Math.max(1, num(i.qty != null ? i.qty : (i.jumlah != null ? i.jumlah : 1))) })) };
+  return { id: o.id, kode: o.kodePelunasan || o.orderNo || o.id, orderNo: o.orderNo || "", nama: o.nama || "", t: toMs(o.createdAt), status: String(o.status || "pending").toLowerCase(), total: num(o.totalAkhir != null ? o.totalAkhir : o.total), sisa: num(o.sisaBayar != null ? o.sisaBayar : o.sisa), ongkir: num(o.ongkir), isPO: !!o.isPO, sumber: String(o.sumber || "").toLowerCase() === "game" ? "game" : "web", resi: o.resi || "", items: items.map(i => ({ nama: String(i.nama || i.name || ""), qty: Math.max(1, num(i.qty != null ? i.qty : (i.jumlah != null ? i.jumlah : 1))) })) };
 }
+/* Pembeli per sumber: order berbayar dipisah antara game (sumber "game") dan web utama (tanpa penanda). */
+export function sourceSummary(orders, today) {
+  const mo = monthOf(today), mk = () => ({ monthN: 0, paidN: 0, omzet: 0, unpaidN: 0 }), r = { game: mk(), web: mk() };
+  orders.forEach(o => {
+    const x = r[o.sumber === "game" ? "game" : "web"], d = o.t ? dayOf(o.t) : "";
+    if (isPaid(o)) { x.paidN++; x.omzet += o.total; if (d && monthOf(d) === mo) x.monthN++; }
+    else if (o.status === "pending") x.unpaidN++;
+  });
+  return r;
+}
+
 export function salesSummary(orders, today) {
   const mo = monthOf(today), by = {}, status = {}, top = {}, months = {};
   let todayN = 0, monthN = 0, monthOmzet = 0, piutang = 0, paidN = 0;

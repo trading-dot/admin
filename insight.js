@@ -102,12 +102,21 @@ function vPengunjung() {
   <div class="grid g2"><div class="card"><h3>${esc(m[0])} ${esc(kl.toLowerCase())}</h3>${bars(lab, [{ name: m[0], color: m[1], vals: rows.map(r => r[PV.metric]) }])}</div>
   <div class="card"><h3>Total perangkat (all-time)</h3><p class="sub">Berapa HP/perangkat berbeda yang pernah masuk, bertambah setiap ada perangkat baru.</p>${line(lab, [{ name: "Perangkat all-time", color: COL.pop, vals: rows.map(r => r.cum) }])}</div></div>
   <div class="card" style="margin-top:12px"><h3>Per website</h3><p class="sub">Format: kunjungan <span class="muted">/ pengunjung unik hari itu</span>. “Perangkat all-time” = HP berbeda sepanjang waktu.</p>${table(["Website", "Hari ini", "Minggu ini", "Bulan ini", "Bulan lalu", "Total kunjungan", "Perangkat all-time"], sums.map(({ s, v }) => [`<b>${esc(s.label)}</b>`, pair(v.today), pair(v.week), pair(v.month), pair(v.prev), n0(v.hits), n0(v.devices)]), ["TOTAL", pair(g.today), pair(g.week), pair(g.month), pair(g.prev), n0(g.hits), n0(g.devices)])}</div>
+  <div style="margin-top:12px">${cardSumber()}</div>
   <div class="card" style="margin-top:12px"><h3>Rincian ${esc(kl.toLowerCase())}</h3>${table(["Periode", "Kunjungan", "Unik harian", "Perangkat baru", "Perangkat all-time"], [...rows].reverse().map(r => [esc(C.labelOf(PV.kind === "month" ? "month" : "day", r.key)) + (PV.kind === "week" ? " (mgg)" : ""), n0(r.hits), n0(r.uniq), n0(r.fresh), n0(r.cum)]), ["TOTAL " + n + " periode", n0(tot(rows).hits), n0(tot(rows).uniq), n0(tot(rows).fresh), n0(rows.length ? rows[rows.length - 1].cum : 0)])}</div>
   <div class="card" style="margin-top:12px"><h3>Bulan-bulan sebelumnya</h3>${table(["Bulan", "Kunjungan", "Unik harian", "Perangkat baru"], months.map(r => [esc(C.labelOf("month", r.key)), n0(r.hits), n0(r.uniq), n0(r.fresh)]))}</div>
   <div class="note" style="margin-top:12px"><b>Cara membaca.</b><br>• <b>Kunjungan</b>: setiap kali halaman dibuka, bertambah terus walau dari HP yang sama.<br>• <b>Unik harian</b>: satu perangkat dihitung sekali per hari. Untuk minggu/bulan, ini penjumlahan unik tiap hari (HP yang datang 3 hari terhitung 3).<br>• <b>Perangkat baru / all-time</b>: HP yang baru pertama kali masuk ke website itu; all-time = jumlahnya sepanjang waktu, jadi satu HP hanya dihitung sekali selamanya.<br>• Perangkat dikenali dari penyimpanan browser, bukan IP. Hapus data situs, mode samaran, atau browser lain dihitung perangkat baru. Satu HP yang membuka dua website berbeda terhitung di masing-masing website, dan TOTAL adalah penjumlahannya.</div>`;
   const rerender = () => vPengunjung();
   $("#pvSite").onchange = e => { PV.site = e.target.value; rerender(); };
   document.querySelectorAll(".seg").forEach(sg => sg.onclick = e => { const b = e.target.closest("button"); if (!b) return; PV[sg.dataset.k] = b.dataset.v; rerender(); });
+}
+
+/* ---------- pembeli per sumber (game vs web utama) ---------- */
+function cardSumber() {
+  const r = C.sourceSummary(D.orders, today()), tot = r.game.paidN + r.web.paidN;
+  const parts = [{ label: "Game", value: r.game.paidN, color: COL.lav, fmt: n0(r.game.paidN) + " order" }, { label: "Web utama", value: r.web.paidN, color: COL.sun, fmt: n0(r.web.paidN) + " order" }].filter(p => p.value > 0);
+  const row = (l, x) => [l, n0(x.monthN), n0(x.paidN), C.rp(x.omzet), n0(x.unpaidN)];
+  return card("Pembeli per sumber", (tot ? donut(parts, n0(tot)) : '<p class="muted">Belum ada order berbayar.</p>') + table(["Sumber", "Bulan ini", "Semua", "Omzet", "Belum bayar"], [row("Game", r.game), row("Web utama", r.web)]), "Order berbayar (DP atau lunas) berdasarkan tempat pembeli memesan");
 }
 
 /* ---------- ringkasan data ---------- */
@@ -138,6 +147,7 @@ function vUtama() {
    ${card("Order berbayar 14 hari", bars(v.map(r => C.labelOf("day", r.key)), [{ name: "Order", color: COL.mint, vals: orders14 }]))}
    ${card("Omzet 6 bulan", bars(m6.map(m => C.labelOf("month", m)), [{ name: "Omzet", color: COL.pop, vals: m6.map(m => (a.sm.months[m] || { omzet: 0 }).omzet) }]))}
    ${card("Pemasukan bulan ini", donut(grupIn, C.short(a.mm.masuk)), "Per kelompok, dari Keuangan")}
+   ${cardSumber()}
   </div>
   <div class="grid g2" style="margin-top:12px">${card("Perlu tindakan", todoList(a))}${card("AI", aiMini() + `<p><a href="#" data-go="insight/ai" class="btn ac" style="text-decoration:none;display:inline-block">Buka AI</a></p>`)}</div>`;
 }
@@ -157,7 +167,7 @@ function vRingkasan() {
   <div class="grid g2">${card("Kunjungan dan unik", hasVisits() ? bars(v30.map(r => C.labelOf("day", r.key)), [{ name: "Kunjungan", color: COL.sun, vals: v30.map(r => r.hits) }, { name: "Unik", color: COL.lav, vals: v30.map(r => r.uniq) }]) : noVisits())}${card("Per website", table(["Website", "Hari ini", "Bulan ini", "Total", "Perangkat"], sums.map(({ s, v }) => [esc(s.label), n0(v.today.hits), n0(v.month.hits), n0(v.hits), n0(v.devices)])), "Rincian lengkap di tab Pengunjung")}</div>
   ${sec("rg-s", "Penjualan", "order, omzet, dan artikel terlaris")}
   <div class="kpis">${kpi("Order bulan ini", n0(sm.monthN), "hari ini " + n0(sm.todayN))}${kpi("Order berbayar (semua)", n0(sm.paidN), "dari " + n0(D.orders.length) + " order", "t3")}${kpi("Omzet bulan ini", C.rp(sm.monthOmzet), "", "t1")}${kpi("Piutang DP", C.rp(sm.piutang), "sisa yang belum dibayar", "t4")}</div>
-  <div class="grid g2">${card("Omzet 12 bulan", bars(m12.map(m => C.labelOf("month", m)), [{ name: "Omzet", color: COL.pop, vals: m12.map(m => (sm.months[m] || { omzet: 0 }).omzet) }]))}${card("Status order", donut(Object.entries(sm.status).map(([k, n]) => ({ label: k, value: n, color: stCol[k] || "#ccc" })), n0(D.orders.length)))}</div>
+  <div class="grid g2">${card("Omzet 12 bulan", bars(m12.map(m => C.labelOf("month", m)), [{ name: "Omzet", color: COL.pop, vals: m12.map(m => (sm.months[m] || { omzet: 0 }).omzet) }]))}${card("Status order", donut(Object.entries(sm.status).map(([k, n]) => ({ label: k, value: n, color: stCol[k] || "#ccc" })), n0(D.orders.length)))}${cardSumber()}</div>
   <div class="grid g2" style="margin-top:12px">${card("Artikel terlaris", sm.top.length ? table(["Artikel", "Terjual"], sm.top.slice(0, 10).map(([n, q]) => [esc(n), n0(q)])) : '<p class="muted">Belum ada order berbayar.</p>')}${card("Order terakhir", table(["Kode", "Nama", "Total", "Status"], [...D.orders].sort((x, y) => y.t - x.t).slice(0, 8).map(o => [esc(o.kode), esc(o.nama), C.rp(o.total), `<span class="chip ${o.status === "lunas" ? "" : o.status === "pending" ? "warn" : "off"}">${esc(o.status)}</span>`])))}</div>
   ${sec("rg-p", "Produk & Stok", "stok per ukuran")}
   <div class="kpis">${kpi("Item", n0(a.sr.length), "produk + aksesoris")}${kpi("Menipis / habis", n0(a.low.length), "stok ≤ 5 (bukan PO/sold)", a.low.length ? "t4" : "t3")}${kpi("PO dibuka", n0(poRows.filter(p => !p.poClosed).length), "produk badge pre", "t2")}${kpi("Sold out", n0(sold), "badge sold")}</div>
