@@ -727,7 +727,7 @@ export async function adminTambahUpdate(o, text) {
 // Disimpan di orders/{id} (untuk admin) dan lacak/{kode} (dibaca pelanggan di Cek Resi & Pantau).
 // Timeline "Paket diserahkan ke pihak pengirim" dibuat sekali (id 'resi', waktu server); resi dihapus => event ikut dihapus.
 // Apps Script pesanan (spreadsheet + email). Alamat yang sama dengan yang dipakai web utama dan game.
-const GAS_ORDER_URL = 'https://script.google.com/macros/s/AKfycbz3vRP4hkKjzv7b_lc3Qq6N5bhXZk44WJZd19fTNJNblwiGBGDH8uw0LKrFckqosBxtzw/exec';
+const GAS_ORDER_URL = 'https://script.google.com/macros/s/AKfycbypW_Y9MnUwXrC0kePXDn-IkSmYW23a5--sMcjzLBahNcXsq9XXsmP3MSPYYnKBd3x56g/exec';
 function kabarkanResiKePelanggan(kode, resi) {   // email "pesanan dikirim"; data pesanan dibaca Apps Script dari spreadsheet berdasarkan ID order
     try {
         fetch(GAS_ORDER_URL, { method: 'POST', mode: 'no-cors', cache: 'no-cache', keepalive: true, headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ event: 'kirim', kodePelunasan: kode, resi }) }).catch(() => { });
