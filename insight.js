@@ -1,4 +1,4 @@
-/* insight.js — panel Insight: Utama (ringkas), Ringkasan (lengkap), Pengunjung, AI. Membaca: toko, keuangan, jurnal, kota (+ statistik pengunjung), Worker AI. */
+/* insight.js — panel Insight: Utama (ringkas), Ringkasan (lengkap), Pengunjung, Aktivitas Pelanggan, AI. Membaca: toko, keuangan, jurnal, kota (+ statistik pengunjung), Worker AI. */
 import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js";
 import { getFirestore, collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, orderBy, limit, getCountFromServer } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
@@ -117,6 +117,66 @@ function cardSumber() {
   const parts = [{ label: "Game", value: r.game.paidN, color: COL.lav, fmt: n0(r.game.paidN) + " order" }, { label: "Web utama", value: r.web.paidN, color: COL.sun, fmt: n0(r.web.paidN) + " order" }].filter(p => p.value > 0);
   const row = (l, x) => [l, n0(x.monthN), n0(x.paidN), C.rp(x.omzet), n0(x.unpaidN)];
   return card("Pembeli per sumber", (tot ? donut(parts, n0(tot)) : '<p class="muted">Belum ada order berbayar.</p>') + table(["Sumber", "Bulan ini", "Semua", "Omzet", "Belum bayar"], [row("Game", r.game), row("Web utama", r.web)]), "Order berbayar (DP atau lunas) berdasarkan tempat pembeli memesan");
+}
+
+/* ---------- aktivitas pelanggan: daftar kunjungan harian per perangkat + kalender + timeline ---------- */
+const AK = { day: "", month: "", cache: {}, dev: "", site: "all", tok: 0 };
+const BLN_P = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+const dayHits = d => ALL.reduce((a, s) => a + (((D.visits[s] || {})[d] || {}).hits || 0), 0);
+const dayLong = d => { const [y, m, x] = C.parts(d); return x + " " + BLN_P[m - 1] + " " + y; };
+const siteName = id => (SITES.find(s => s.id === id) || { label: id }).label;
+const siteCol = id => (SITES.find(s => s.id === id) || { color: "#ccc" }).color;
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+function calHTML() {
+  const t = today(), [y, m] = AK.month.split("-").map(Number), off = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7, n = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  let cells = "".padEnd(0); for (let i = 0; i < off; i++) cells += "<span></span>";
+  for (let d = 1; d <= n; d++) { const key = AK.month + "-" + String(d).padStart(2, "0"), h = dayHits(key), fut = key > t; cells += `<button data-d="${key}" class="${key === AK.day ? "on " : ""}${key === t ? "now " : ""}${h ? "has" : ""}" ${fut ? "disabled" : ""}><b>${d}</b>${h ? `<i>${C.short(h)}</i>` : ""}</button>`; }
+  return `<div class="cal"><div class="calh"><button class="btn" data-m="-1">‹</button><b>${BLN_P[m - 1]} ${y}</b><button class="btn" data-m="1" ${C.addMonths(AK.month, 1) > C.monthOf(t) ? "disabled" : ""}>›</button></div>
+  <div class="calg">${["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"].map(x => `<small>${x}</small>`).join("")}${cells}</div></div>`;
+}
+async function akLoad(day, force) {
+  if (!force && AK.cache[day]) return AK.cache[day];
+  const s = await getDocs(query(collection(cDb, "aktivitas"), where("day", "==", day), limit(500)));
+  return AK.cache[day] = s.docs.map(d => C.deviceSummary({ id: d.id, ...d.data() }));
+}
+function vAktivitas() {
+  if (!AK.day) { AK.day = today(); AK.month = C.monthOf(AK.day); }
+  if (!cDb) { app.innerHTML = `<div class="sec"><h2>Aktivitas Pelanggan</h2></div><div class="note"><b>Belum login ke project kota.</b> Aktivitas pelanggan disimpan di project kota (sama dengan statistik pengunjung). Login ulang dari halaman utama admin.</div>`; return; }
+  app.innerHTML = `<div class="sec"><h2>Aktivitas Pelanggan</h2><span class="muted">Apa saja yang dilakukan tiap perangkat di web, per hari</span></div>
+  <div class="grid g2 ak"><div class="card"><h3>Kalender</h3><p class="sub">Angka kecil = jumlah kunjungan hari itu. Ketuk tanggal untuk melihat daftar perangkat.</p><div id="akCal">${calHTML()}</div></div>
+  <div class="card"><h3 id="akTitle"></h3><div class="bar" style="margin-top:4px"><select id="akSite"><option value="all">Semua website</option>${SITES.map(s => `<option value="${s.id}" ${AK.site === s.id ? "selected" : ""}>${esc(s.label)}</option>`).join("")}</select><button class="btn" id="akRef">Segarkan</button></div><div id="akList"><p class="muted">Memuat…</p></div></div></div>
+  <div class="card" id="akDetail" style="margin-top:12px" hidden></div>
+  <div class="note" style="margin-top:12px"><b>Cara membaca.</b><br>• Satu baris daftar = satu perangkat (HP/browser) dalam satu hari. Nama perangkat berupa ID acak, bukan nama orang.<br>• Perangkat dikenali dari ID di browser, jadi hapus data situs atau mode samaran dihitung perangkat baru. Web utama, game, dan kota berbagi ID yang sama; Jurnal terpisah.<br>• Yang tercatat hanya aksi (buka halaman, lihat produk, pilih ukuran/warna, isi alamat, bayar, keluar). Isi alamat, nama, nomor HP, dan email tidak dikirim.<br>• Data mulai terkumpul sejak pelacak versi baru dipasang; hari sebelumnya hanya punya hitungan kunjungan.</div>`;
+  const paint = async force => {
+    const tok = ++AK.tok, list = $("#akList"), title = $("#akTitle"); if (!list) return;
+    title.textContent = "Daftar kunjungan harian · " + dayLong(AK.day); list.innerHTML = '<p class="muted">Memuat…</p>'; $("#akDetail").hidden = true;
+    let rows; try { rows = await akLoad(AK.day, force); } catch (e) { if (tok !== AK.tok) return; list.innerHTML = `<div class="note"><b>Belum bisa membaca aktivitas</b> (${esc(e.code || e.message)}). Kalau pesannya permission-denied, publikasikan <code>firestore.rules</code> terbaru di project city (Firebase Console, Firestore, Rules).</div>`; return; }
+    if (tok !== AK.tok) return;
+    rows = rows.filter(r => AK.site === "all" || r.sites.includes(AK.site)).sort((a, b) => b.last - a.last);
+    if (!rows.length) { list.innerHTML = `<p class="muted">Belum ada aktivitas tercatat di ${esc(dayLong(AK.day))}${dayHits(AK.day) ? " (ada " + n0(dayHits(AK.day)) + " kunjungan di statistik, tapi dari sebelum pelacak aktivitas dipasang)" : ""}.</p>`; return; }
+    const paid = rows.filter(r => r.paid).length;
+    list.innerHTML = `<p class="sub">${n0(rows.length)} perangkat · ${n0(rows.reduce((a, r) => a + r.n, 0))} aksi${paid ? " · " + n0(paid) + " sudah bayar" : ""}. Terbaru di atas.</p><div class="devs">${rows.map(r => `<button class="dev" data-dev="${esc(r.dev)}"><span class="dn"><b>${esc(r.dev)}</b><small>${esc(r.ua || "-")}</small></span><span class="dm">${C.hhmm(r.first)}–${C.hhmm(r.last)} · ${n0(r.n)} aksi</span><span class="dt">${r.sites.map(s => `<i style="background:${siteCol(s)}" title="${esc(siteName(s))}"></i>`).join("")}<span class="chip ${r.paid ? "" : r.stage === "Menjelajah" ? "off" : "warn"}">${esc(r.stage)}</span></span></button>`).join("")}</div>`;
+    list.querySelectorAll(".dev").forEach(b => b.onclick = () => { AK.dev = b.dataset.dev; detail(rows.find(r => r.dev === AK.dev)); });
+    if (AK.dev) { const cur = rows.find(r => r.dev === AK.dev); if (cur) detail(cur, true); }
+  };
+  const detail = (r, quiet) => {
+    const box = $("#akDetail"); if (!r) { box.hidden = true; return; }
+    const tl = C.timeline(r.ev), path = r.sites.map(siteName).join(" → ");
+    box.hidden = false;
+    box.innerHTML = `<h3>Daftar kunjungan harian "${esc(r.dev)}"</h3><p class="sub">${esc(dayLong(AK.day))} · ${esc(r.ua || "-")} · ${esc(path)} · ${n0(r.n)} aksi</p>
+    <ol class="tl">${tl.map(x => `<li class="${x.newVisit ? "nv" : ""}"><time>${C.hhmm(x.t)}</time><span>—</span><div>${x.newVisit ? `<em style="background:${siteCol(x.site)}">${esc(siteName(x.site))}</em> ` : ""}${esc(x.newVisit ? x.text : cap(x.text))}${x.newVisit ? "" : ""}</div></li>`).join("")}</ol>`;
+    if (!quiet) box.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const cal = $("#akCal");
+  cal.onclick = e => {
+    const mb = e.target.closest("[data-m]"), db = e.target.closest("[data-d]");
+    if (mb) { AK.month = C.addMonths(AK.month, Number(mb.dataset.m)); cal.innerHTML = calHTML(); }
+    else if (db && !db.disabled) { AK.day = db.dataset.d; AK.dev = ""; cal.innerHTML = calHTML(); paint(); }
+  };
+  $("#akSite").onchange = e => { AK.site = e.target.value; paint(); };
+  $("#akRef").onclick = () => paint(true);
+  paint();
 }
 
 /* ---------- ringkasan data ---------- */
@@ -293,7 +353,7 @@ async function vAI() {
 function render() {
   const t = window.__insightTab || "utama"; if (t !== "ai") stopPoll();
   if (!D.loaded) return;
-  ({ utama: vUtama, ringkasan: vRingkasan, pengunjung: vPengunjung, ai: vAI }[t] || vUtama)();
+  ({ utama: vUtama, ringkasan: vRingkasan, pengunjung: vPengunjung, aktivitas: vAktivitas, ai: vAI }[t] || vUtama)();
   document.querySelectorAll("[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); try { parent.location.hash = "#" + a.dataset.go; } catch { } });
 }
 window.insightTab = t => { window.__insightTab = t; render(); };

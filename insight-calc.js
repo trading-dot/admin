@@ -94,3 +94,71 @@ export function moneySummary(tx, today) {
 }
 export const rp = n => "Rp" + Math.round(n).toLocaleString("id-ID");
 export const short = n => { const a = Math.abs(n); return (n < 0 ? "-" : "") + (a >= 1e9 ? (a / 1e9).toFixed(1) + "M" : a >= 1e6 ? (a / 1e6).toFixed(1) + "jt" : a >= 1e3 ? Math.round(a / 1e3) + "rb" : String(Math.round(a))); };
+
+/* ---------- aktivitas pelanggan: aktivitas/{hari}_{perangkat} = {dev, day, ua, ev:["ms|situs|kode|detail", ...]} ---------- */
+export const hhmm = ms => { const d = new Date(ms + WIB); return String(d.getUTCHours()).padStart(2, "0") + "." + String(d.getUTCMinutes()).padStart(2, "0"); };
+export function parseEv(arr) {
+  return (Array.isArray(arr) ? arr : []).map(s => { const p = String(s).split("|"); return { t: Number(p[0]) || 0, site: p[1] || "", k: p[2] || "", d: p.slice(3).join("|") }; }).filter(e => e.t && e.k).sort((a, b) => a.t - b.t);
+}
+const titleCase = s => String(s).replace(/[-_]+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+/* nama halaman dari alamat (path) yang dicatat pelacak, per situs */
+export function pageLabel(site, path) {
+  const p = String(path || "/").toLowerCase().replace(/\/+$/, "") || "/", seg = p.split("/").filter(Boolean);
+  if (site === "game") return "membuka toko game 3D";
+  if (site === "kota") return "membuka Kota 3D";
+  if (site === "jurnal") return p === "/" || p === "/index.html" ? "membuka beranda Jurnal" : p === "/article.html" ? "membaca artikel Jurnal" : p === "/discussion.html" ? "membuka diskusi Jurnal" : "membuka halaman Jurnal " + p;
+  const known = { "/": "halaman utama", "/preorder": "menu Pre-Order", "/katalog": "Katalog", "/arsip": "Arsip", "/galeri": "Galeri", "/tentang": "halaman Tentang", "/berita": "Berita", "/diskusi": "Diskusi", "/pantau": "Pantau Pesanan", "/pelunasan": "Pelunasan", "/resi": "Cek Resi", "/index.html": "halaman utama" };
+  if (known[p]) return "membuka " + known[p];
+  if (p === "/keranjang") return "membuka keranjang";
+  if (p === "/keranjang/form") return "membuka form pengiriman (keranjang)";
+  if (p === "/keranjang/summary") return "melihat ringkasan pesanan (keranjang)";
+  if (seg.length === 1) return "membuka produk " + titleCase(seg[0]);
+  if (seg.length === 2 && seg[1] === "form") return "membuka form pengiriman " + titleCase(seg[0]);
+  if (seg.length === 2 && seg[1] === "summary") return "melihat ringkasan pesanan " + titleCase(seg[0]);
+  return "membuka halaman " + p;
+}
+export function describe(e) {
+  switch (e.k) {
+    case "buka": return pageLabel(e.site, e.d);
+    case "katalog": return "membuka katalog" + (e.d ? " (" + e.d.toLowerCase() + ")" : "");
+    case "produk": return "membuka produk " + (e.d || "");
+    case "ukuran": return "memilih ukuran " + e.d;
+    case "warna": return "memilih warna " + e.d;
+    case "tas": return "memasukkan " + (e.d || "produk") + " ke tas belanja";
+    case "keranjang": return "membuka tas belanja";
+    case "checkout": return "membuka form pengiriman";
+    case "alamat": return "mengisi alamat";
+    case "bayar_buka": return e.d === "P" ? "membuka pelunasan" : "membuka halaman pembayaran";
+    case "pesan": return "membuat pesanan (menunggu pembayaran)";
+    case "bayar_ok": return e.d === "P" ? "pelunasan berhasil" : "pembayaran berhasil";
+    case "bayar_tunggu": return "pembayaran belum selesai, menunggu";
+    case "keluar": return "meninggalkan website";
+    case "kembali": return "kembali ke website";
+    default: return e.k + (e.d ? " " + e.d : "");
+  }
+}
+/* gabungkan aksi jadi baris timeline: ukuran+warna jadi satu baris, "mengisi alamat" + keluar jadi satu baris, situs ditandai di awal tiap kunjungan */
+export function timeline(events) {
+  const out = []; let prev = null;
+  const GAP = 30 * 60e3;
+  events.forEach(e => {
+    const newVisit = !prev || prev.site !== e.site || e.t - prev.t > GAP || prev.k === "keluar";
+    const last = out[out.length - 1];
+    if (last && !newVisit && (e.k === "ukuran" || e.k === "warna") && last.opts && e.t - last.t0 < 5 * 6e4) {
+      last.opts[e.k] = e.d; last.text = optsText(last.opts); prev = e; return;
+    }
+    if (e.k === "keluar" && last && !newVisit && last.site === e.site && !last.left && e.t - last.t < 10 * 6e4) { last.text += ", lalu meninggalkan website"; last.left = true; prev = e; return; }
+    const row = { t: e.t, t0: e.t, site: e.site, k: e.k, text: describe(e), newVisit, left: false };
+    if (e.k === "ukuran" || e.k === "warna") { row.opts = { [e.k]: e.d }; row.text = optsText(row.opts); }
+    out.push(row); prev = e;
+  });
+  return out;
+}
+const optsText = o => o.ukuran && o.warna ? "memilih ukuran " + o.ukuran + " dan warna " + o.warna : o.ukuran ? "memilih ukuran " + o.ukuran : "memilih warna " + o.warna;
+const STAGE = [["bayar_ok", "Sudah bayar", 6], ["pesan", "Pesan, belum bayar", 5], ["bayar_buka", "Buka pembayaran", 5], ["alamat", "Isi alamat", 4], ["checkout", "Buka form kirim", 3], ["tas", "Masuk tas", 3], ["produk", "Lihat produk", 2]];
+/* ringkasan satu perangkat: jumlah aksi, jam pertama/terakhir, situs yang dikunjungi, tahap terjauh */
+export function deviceSummary(doc) {
+  const ev = parseEv(doc.ev), sites = []; ev.forEach(e => { if (e.site && !sites.includes(e.site)) sites.push(e.site); });
+  let stage = ["", "Menjelajah", 1]; STAGE.forEach(s => { if (ev.some(e => e.k === s[0]) && s[2] > stage[2]) stage = s; });
+  return { dev: doc.dev || String(doc.id || "").split("_").slice(1).join("_"), ua: doc.ua || "", ev, n: ev.length, first: ev.length ? ev[0].t : 0, last: ev.length ? ev[ev.length - 1].t : 0, sites, stage: stage[1], paid: ev.some(e => e.k === "bayar_ok") };
+}
