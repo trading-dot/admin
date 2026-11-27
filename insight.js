@@ -126,6 +126,7 @@ const dayHits = d => ALL.reduce((a, s) => a + (((D.visits[s] || {})[d] || {}).hi
 const dayLong = d => { const [y, m, x] = C.parts(d); return x + " " + BLN_P[m - 1] + " " + y; };
 const siteName = id => (SITES.find(s => s.id === id) || { label: id }).label;
 const siteCol = id => (SITES.find(s => s.id === id) || { color: "#ccc" }).color;
+const inkOn = c => { const h = String(c).replace("#", ""), v = h.length === 3 ? h.split("").map(x => x + x).join("") : h, [r, g, b] = [0, 2, 4].map(i => parseInt(v.substr(i, 2), 16) || 0); return (r * 299 + g * 587 + b * 114) / 1000 < 140 ? "#fff" : "#111"; };
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 
 function calHTML() {
@@ -136,7 +137,7 @@ function calHTML() {
   <div class="calg">${["Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min"].map(x => `<small>${x}</small>`).join("")}${cells}</div></div>`;
 }
 async function akLoad(day, force) {
-  if (!force && AK.cache[day]) return AK.cache[day];
+  if (!force && day !== today() && AK.cache[day]) return AK.cache[day];   // hari ini selalu diambil ulang
   const s = await getDocs(query(collection(cDb, "aktivitas"), where("day", "==", day), limit(500)));
   return AK.cache[day] = s.docs.map(d => C.deviceSummary({ id: d.id, ...d.data() }));
 }
@@ -165,7 +166,7 @@ function vAktivitas() {
     const tl = C.timeline(r.ev), path = r.sites.map(siteName).join(" → ");
     box.hidden = false;
     box.innerHTML = `<h3>Daftar kunjungan harian "${esc(r.dev)}"</h3><p class="sub">${esc(dayLong(AK.day))} · ${esc(r.ua || "-")} · ${esc(path)} · ${n0(r.n)} aksi</p>
-    <ol class="tl">${tl.map(x => `<li class="${x.newVisit ? "nv" : ""}"><time>${C.hhmm(x.t)}</time><span>—</span><div>${x.newVisit ? `<em style="background:${siteCol(x.site)}">${esc(siteName(x.site))}</em> ` : ""}${esc(x.newVisit ? x.text : cap(x.text))}${x.newVisit ? "" : ""}</div></li>`).join("")}</ol>`;
+    <ol class="tl">${tl.map(x => `<li class="${x.newVisit ? "nv" : ""}"><time>${C.hhmm(x.t)}</time><span>—</span><div>${x.newVisit ? `<em style="background:${siteCol(x.site)};color:${inkOn(siteCol(x.site))}">${esc(siteName(x.site))}</em> ` : ""}${esc(x.newVisit ? x.text : cap(x.text))}${x.newVisit ? "" : ""}</div></li>`).join("")}</ol>`;
     if (!quiet) box.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const cal = $("#akCal");
